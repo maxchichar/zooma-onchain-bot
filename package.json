@@ -1,0 +1,27 @@
+{
+  "name": "phase1-live-signal-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Always-on Helius-webhook-driven wallet pattern detector that drops [UNVALIDATED] signals to Telegram. Runs unattended.",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts",
+    "register-webhook": "tsx src/registerWebhook.ts",
+    "register-telegram-webhook": "tsx src/registerTelegramWebhook.ts",
+    "discover": "tsx src/discover.ts",
+    "report": "tsx src/report.ts",
+    "wallet-scores": "tsx src/walletScoresReport.ts",
+    "research-scores": "tsx src/researchScoresReport.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.7.0",
+    "@types/express": "^4.17.21"
+  }
+}
