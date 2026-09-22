@@ -1,0 +1,12 @@
+# Secrets — never commit real values. .env.example (with blank values)
+# is the one that belongs in the repo.
+.env
+.env.*
+!.env.example
+
+node_modules/
+
+# Build output, logs, editor/OS cruft
+dist/
+*.log
+.DS_Store
