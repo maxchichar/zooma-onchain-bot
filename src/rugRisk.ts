@@ -1,0 +1,159 @@
+/**
+ * RUG RISK CHECKS — goes beyond the basic holder-concentration check
+ * already in research.ts. Two checks, both free, both deterministic:
+ *
+ * 1. MINT & FREEZE AUTHORITY STATUS. One of the clearest, most reliable
+ *    rug indicators that exists on Solana, and it's a single free RPC
+ *    call. Every SPL token has a "mint authority" (who can create more
+ *    of the token) and a "freeze authority" (who can freeze a specific
+ *    wallet's token account, blocking transfers). A legitimate project
+ *    renounces both (sets them to null) once the token launches. If
+ *    either is still set to a real address:
+ *      - mint authority NOT renounced: the deployer can print unlimited
+ *        additional tokens whenever they want and dump them on holders.
+ *      - freeze authority NOT renounced: the deployer can freeze YOUR
+ *        wallet's tokens, preventing you from ever selling.
+ *    This is unambiguous and checkable — no heuristic involved.
+ *
+ * 2. DEPLOYER HISTORY. Approximate, heuristic, and labeled as such
+ *    everywhere it's surfaced. Finds the wallet that likely deployed
+ *    this token (the earliest transaction touching the mint, within a
+ *    capped lookback — for an old, high-activity mint this could miss
+ *    the true origin, which is fine since this is aimed at freshly
+ *    launched meme coins). Then looks at that wallet's other token
+ *    activity: a deployer wallet typically receives the full initial
+ *    supply of a token it creates, so a large token transfer INTO the
+ *    deployer for a mint not otherwise seen is used as a proxy for
+ *    "this wallet launched this token too." Each such token's CURRENT
+ *    liquidity is checked — near-zero liquidity on a token this wallet
+ *    previously launched is the classic serial-rug-deployer pattern.
+ *    This is a signal, not a verdict: false positives (a legitimate
+ *    builder who's launched several tokens, one of which just didn't
+ *    take off) are possible and expected.
+ */
+import { rpcCall } from "./solanaRpc.js";
+import { fetchTokenPairs } from "./researchSources.js";
+
+const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
+const HELIUS_BASE = "https://api.helius.xyz/v0";
+const DEPLOYER_LOOKBACK_PAGES = Number(process.env.RUG_CHECK_DEPLOYER_LOOKBACK_PAGES ?? 5);
+const DEPLOYER_MIN_INITIAL_MINT_AMOUNT = Number(process.env.RUG_CHECK_MIN_INITIAL_MINT_AMOUNT ?? 1_000_000);
+const ABANDONED_LIQUIDITY_USD_THRESHOLD = Number(process.env.RUG_CHECK_ABANDONED_LIQUIDITY_USD ?? 500);
+
+export interface MintAuthorityStatus {
+  mintAuthorityRenounced: boolean;
+  freezeAuthorityRenounced: boolean;
+}
+
+/** Single free RPC call. Returns null only on an RPC failure, not on "authority exists" (that's a real, valid result). */
+export async function checkMintAuthorities(mint: string): Promise<MintAuthorityStatus | null> {
+  try {
+    const result = await rpcCall<{
+      value: { data: { parsed: { info: { mintAuthority: string | null; freezeAuthority: string | null } } } } | null;
+    }>("getAccountInfo", [mint, { encoding: "jsonParsed" }]);
+
+    const info = result?.value?.data?.parsed?.info;
+    if (!info) return null;
+
+    return {
+      mintAuthorityRenounced: info.mintAuthority === null,
+      freezeAuthorityRenounced: info.freezeAuthority === null,
+    };
+  } catch (err) {
+    console.warn(`[rugRisk] mint authority check failed for ${mint}:`, (err as Error).message);
+    return null;
+  }
+}
+
+interface HeliusTx {
+  signature: string;
+  feePayer?: string;
+  tokenTransfers?: { fromUserAccount: string; toUserAccount: string; mint: string; tokenAmount: number }[];
+}
+
+async function fetchAddressTransactions(address: string, maxPages: number, direction: "newest" | "oldest"): Promise<HeliusTx[]> {
+  if (!HELIUS_API_KEY) return [];
+  const all: HeliusTx[] = [];
+  let before: string | undefined;
+
+  for (let page = 0; page < maxPages; page++) {
+    const url = new URL(`${HELIUS_BASE}/addresses/${address}/transactions`);
+    url.searchParams.set("api-key", HELIUS_API_KEY);
+    url.searchParams.set("limit", "100");
+    if (before) url.searchParams.set("before", before);
+
+    const res = await fetch(url.toString());
+    if (!res.ok) break;
+    const batch = (await res.json()) as HeliusTx[];
+    if (!batch.length) break;
+
+    all.push(...batch);
+    before = batch[batch.length - 1].signature;
+    await new Promise((r) => setTimeout(r, 150)); // free-tier courtesy delay
+  }
+
+  // Helius returns newest-first. "oldest" direction just means the caller
+  // wants us to have paged as far back as maxPages allows before reading
+  // the tail of the array — we don't reverse anything, we just document
+  // which end of `all` the caller should look at.
+  void direction;
+  return all;
+}
+
+export interface DeployerHistory {
+  deployer: string;
+  otherTokensFound: number;
+  likelyAbandonedCount: number;
+  abandonedExamples: string[]; // token mints, capped to a few for the evidence line
+}
+
+/**
+ * Best-effort. Returns null if Helius isn't configured, the mint has no
+ * discoverable transaction history within the lookback, or no deployer
+ * could be identified — all normal, expected outcomes, not errors.
+ */
+export async function checkDeployerHistory(mint: string): Promise<DeployerHistory | null> {
+  if (!HELIUS_API_KEY) return null;
+
+  // Approximate the deployer as the fee payer of the oldest transaction
+  // we can find within the capped lookback (see file header caveat).
+  const mintTxs = await fetchAddressTransactions(mint, DEPLOYER_LOOKBACK_PAGES, "oldest");
+  if (mintTxs.length === 0) return null;
+  const deployer = mintTxs[mintTxs.length - 1]?.feePayer;
+  if (!deployer) return null;
+
+  // Now look at the deployer's own transaction history for other tokens
+  // it likely launched (large initial mints received).
+  const deployerTxs = await fetchAddressTransactions(deployer, DEPLOYER_LOOKBACK_PAGES, "newest");
+  const otherMints = new Map<string, number>(); // mint -> largest single inbound amount seen
+
+  for (const tx of deployerTxs) {
+    for (const t of tx.tokenTransfers ?? []) {
+      if (t.toUserAccount !== deployer || t.mint === mint) continue;
+      if (t.tokenAmount < DEPLOYER_MIN_INITIAL_MINT_AMOUNT) continue;
+      const existing = otherMints.get(t.mint) ?? 0;
+      otherMints.set(t.mint, Math.max(existing, t.tokenAmount));
+    }
+  }
+
+  const otherTokens = [...otherMints.keys()];
+  let likelyAbandonedCount = 0;
+  const abandonedExamples: string[] = [];
+
+  for (const otherMint of otherTokens.slice(0, 15)) {
+    // Cap how many we check to keep this bounded — a serial deployer with
+    // dozens of tokens will still get flagged from the first 15.
+    try {
+      const pairs = await fetchTokenPairs(otherMint);
+      const bestLiquidity = pairs.reduce((max, p) => Math.max(max, p.liquidity?.usd ?? 0), 0);
+      if (bestLiquidity < ABANDONED_LIQUIDITY_USD_THRESHOLD) {
+        likelyAbandonedCount++;
+        if (abandonedExamples.length < 3) abandonedExamples.push(otherMint);
+      }
+    } catch {
+      // Unpriceable — skip rather than guess.
+    }
+  }
+
+  return { deployer, otherTokensFound: otherTokens.length, likelyAbandonedCount, abandonedExamples };
+}
