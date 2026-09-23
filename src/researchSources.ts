@@ -52,6 +52,18 @@ export interface DexScreenerPair {
   volume?: { h24?: number };
   txns?: { h24?: { buys: number; sells: number } };
   pairCreatedAt?: number; // unix ms
+  info?: {
+    imageUrl?: string;
+    header?: string;
+    openGraph?: string;
+    websites?: Array<{ label?: string; url: string }>;
+    socials?: Array<{ type?: string; url: string }>;
+  };
+}
+
+export function getTokenImageUrl(mint: string, pair?: DexScreenerPair): string {
+  if (pair?.info?.imageUrl) return pair.info.imageUrl;
+  return `https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png`;
 }
 
 async function safeFetchJson<T>(url: string): Promise<T | null> {

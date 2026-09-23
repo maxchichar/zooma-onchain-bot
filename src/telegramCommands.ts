@@ -3,10 +3,10 @@
  * /scan, /trending, /discover, /help. Received via Telegram webhook.
  */
 import { supabase } from "./supabase.js";
-import { sendTelegramMessageTo } from "./telegram.js";
+import { sendTelegramMessageTo, sendTelegramPhotoTo } from "./telegram.js";
 import { refreshWebhookWithCurrentWallets, runDiscoveryOnce } from "./discover.js";
 import { computeAllWalletScores } from "./walletScoring.js";
-import { fetchTokenPairs, fetchLatestBoostedSolanaTokens } from "./researchSources.js";
+import { fetchTokenPairs, fetchLatestBoostedSolanaTokens, getTokenImageUrl } from "./researchSources.js";
 import { checkMintAuthorities } from "./rugRisk.js";
 import { getTopHolderConcentration } from "./solanaRpc.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
@@ -180,7 +180,8 @@ async function handleScan(chatId: string, address: string | undefined): Promise<
     `${securityText}\n\n` +
     `⚡ *Trade instantly using the terminals below:*`;
 
-  await sendTelegramMessageTo(chatId, text, getTokenTradingButtons(address));
+  const imageUrl = getTokenImageUrl(address, pair);
+  await sendTelegramPhotoTo(chatId, imageUrl, text, getTokenTradingButtons(address));
 }
 
 async function handleTrending(chatId: string): Promise<void> {

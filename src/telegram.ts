@@ -34,13 +34,44 @@ async function rawSend(chatId: string, text: string, buttons?: TelegramButton[][
   }
 }
 
+async function rawSendPhoto(chatId: string, photoUrl: string, captionText: string, buttons?: TelegramButton[][]): Promise<void> {
+  if (!BOT_TOKEN) {
+    console.warn("[telegram] TELEGRAM_BOT_TOKEN not set — logging instead of sending:\n", captionText);
+    return;
+  }
+
+  const replyMarkup = buttons
+    ? { inline_keyboard: buttons.map((row) => row.map((b) => ({ text: b.text, url: b.url }))) }
+    : undefined;
+
+  // Telegram caption limit is 1024 characters.
+  const caption = captionText.length > 1024 ? captionText.slice(0, 1020) + "..." : captionText;
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        photo: photoUrl,
+        caption: caption,
+        parse_mode: "Markdown",
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      }),
+    });
+
+    if (!res.ok) {
+      console.warn(`[telegram] sendPhoto returned ${res.status}, falling back to sendMessage`);
+      await rawSend(chatId, captionText, buttons);
+    }
+  } catch (err) {
+    console.warn("[telegram] sendPhoto error, falling back to sendMessage:", (err as Error).message);
+    await rawSend(chatId, captionText, buttons);
+  }
+}
+
 /**
- * Sends to the configured default chat (TELEGRAM_CHAT_ID) — used by every
- * automated alert (signals, paper trades, digests). Every message this
- * bot sends automatically should be prefixed with a status tag
- * ([UNVALIDATED] until backtesting says otherwise) — see signalEngine.ts
- * for where that's enforced. This function itself doesn't add the tag;
- * it just delivers whatever text (and optional buttons) it's given.
+ * Sends to the configured default chat (TELEGRAM_CHAT_ID) — used by automated alerts.
  */
 export async function sendTelegramMessage(text: string, buttons?: TelegramButton[][]): Promise<void> {
   if (!DEFAULT_CHAT_ID) {
@@ -51,10 +82,27 @@ export async function sendTelegramMessage(text: string, buttons?: TelegramButton
 }
 
 /**
- * Sends to a SPECIFIC chat — used only when replying to an inbound slash
- * command (telegramCommands.ts), where the reply should go back to
- * whoever sent the command, not necessarily the default chat.
+ * Sends a message with a photo to the default chat. Falls back to text message if photo fails.
+ */
+export async function sendTelegramPhoto(photoUrl: string, text: string, buttons?: TelegramButton[][]): Promise<void> {
+  if (!DEFAULT_CHAT_ID) {
+    console.warn("[telegram] TELEGRAM_CHAT_ID not set — logging instead of sending:\n", text);
+    return;
+  }
+  await rawSendPhoto(DEFAULT_CHAT_ID, photoUrl, text, buttons);
+}
+
+/**
+ * Sends to a SPECIFIC chat — used when replying to an inbound slash command.
  */
 export async function sendTelegramMessageTo(chatId: string, text: string, buttons?: TelegramButton[][]): Promise<void> {
   await rawSend(chatId, text, buttons);
 }
+
+/**
+ * Sends a photo message to a SPECIFIC chat. Falls back to text message if photo fails.
+ */
+export async function sendTelegramPhotoTo(chatId: string, photoUrl: string, text: string, buttons?: TelegramButton[][]): Promise<void> {
+  await rawSendPhoto(chatId, photoUrl, text, buttons);
+}
+

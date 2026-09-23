@@ -20,7 +20,7 @@
  * research, not a vetted opportunity.
  */
 import { supabase } from "./supabase.js";
-import { sendTelegramMessage } from "./telegram.js";
+import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.js";
 import { classifyTokenRisk } from "./jev.js";
 import { explainResearchCandidate } from "./llm.js";
 import { getTopHolderConcentration } from "./solanaRpc.js";
@@ -34,6 +34,7 @@ import {
   fetchSocialScore,
   fetchCollectionsPage,
   fetchCollectionStats,
+  getTokenImageUrl,
 } from "./researchSources.js";
 
 const MIN_LIQUIDITY_USD = Number(process.env.RESEARCH_MIN_LIQUIDITY_USD ?? 5000);
@@ -118,7 +119,12 @@ async function fireResearchSignal(params: {
       ? [[{ text: "🌊 Magic Eden", url: `https://magiceden.io/marketplace/${params.tokenOrSymbol}` }]]
       : getTokenTradingButtons(params.tokenOrSymbol);
 
-  await sendTelegramMessage(message, buttons);
+  if (params.category === "meme_coin_watch") {
+    const imageUrl = getTokenImageUrl(params.tokenOrSymbol);
+    await sendTelegramPhoto(imageUrl, message, buttons);
+  } else {
+    await sendTelegramMessage(message, buttons);
+  }
 
   try {
     await openPaperTrade(signal.id, params.tokenOrSymbol, params.category);
