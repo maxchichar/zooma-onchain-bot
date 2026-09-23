@@ -215,7 +215,7 @@ export async function fireEarly100xAlert(gem: Early100xCandidate): Promise<void>
   await sendTelegramPhoto(imageUrl, message, getTokenTradingButtons(gem.tokenAddress));
 
   try {
-    await openPaperTrade(signal.id, gem.tokenAddress, "solid_gem");
+    await openPaperTrade(signal.id, gem.tokenAddress, "early_100x", gem.priceUsd, gem.pair);
   } catch (err) {
     console.error("[early100x] paper trade open error:", (err as Error).message);
   }

@@ -212,7 +212,7 @@ export async function fireInsiderSniperAlert(candidate: InsiderCandidate): Promi
 
   // Automatically open simulated $2 paper trade
   try {
-    await openPaperTrade(signal.id, candidate.tokenAddress, "solid_gem");
+    await openPaperTrade(signal.id, candidate.tokenAddress, "insider_snipe", candidate.priceUsd, candidate.pair);
   } catch (err) {
     console.error("[insiderSniper] paper trade error:", (err as Error).message);
   }

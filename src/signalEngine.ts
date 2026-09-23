@@ -182,7 +182,7 @@ async function handleWhaleBuy(leg: ParsedLeg): Promise<void> {
   await sendTelegramPhoto(imageUrl, message, getTokenTradingButtons(leg.mint));
 
   try {
-    await openPaperTrade(signal.id, leg.mint, "whale_entry");
+    await openPaperTrade(signal.id, leg.mint, "whale_entry", pair?.priceUsd ? Number(pair.priceUsd) : undefined, pair);
   } catch (err) {
     console.error("[signalEngine] paper trade error for whale buy:", (err as Error).message);
   }
@@ -247,12 +247,12 @@ async function fireSignal(
 
   await sendTelegramPhoto(imageUrl, message, getTokenTradingButtons(tokenMint));
 
-  // Every fired signal opens a simulated position automatically — this
+  // Every fired signal opens a simulated position automatically: this
   // is what lets us eventually answer "would this have made money"
   // instead of just "did the pattern match." Best-effort: a failure here
   // must never affect the signal itself, which is already recorded.
   try {
-    await openPaperTrade(signal.id, tokenMint, "wallet_pattern");
+    await openPaperTrade(signal.id, tokenMint, "wallet_pattern", pair?.priceUsd ? Number(pair.priceUsd) : undefined, pair);
   } catch (err) {
     console.error("[signalEngine] failed to open paper trade:", (err as Error).message);
   }

@@ -162,7 +162,7 @@ export async function fireTrendingBreakoutAlert(token: TrendingTokenDetail): Pro
 
   // Automatically open simulated $2 paper trade position
   try {
-    await openTrendingPaperTrade(token.tokenAddress);
+    await openTrendingPaperTrade(token.tokenAddress, token.priceUsd);
   } catch (err) {
     console.error("[trendingAlerter] paper trade error:", (err as Error).message);
   }
