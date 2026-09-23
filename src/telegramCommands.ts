@@ -23,7 +23,7 @@ import {
   setPaperTradingPositionSize,
   getPaperTradingSettings,
 } from "./paperTrading.js";
-import { getRecentTraderEntries, formatTraderEntriesText } from "./topTraders.js";
+import { getRecentTraderEntries, formatTraderEntriesText, scanAndRecord100xTopTraders } from "./topTraders.js";
 import { scanSolidGems, fireSolidGemAlert } from "./solidGems.js";
 import { scanEarly100xGems } from "./early100xGems.js";
 import { fetchTopTrendingSolanaTokens, TrendingTokenDetail } from "./trendingAlerter.js";
@@ -72,6 +72,7 @@ const HELP_TEXT =
   `📈 \`/positions\` : Live Paper Portfolio & Real-Time PnL\n` +
   `❌ \`/close <CA>\` : Close Position at Market Price\n` +
   `📜 \`/history\` : Closed Trades & Win-Rate History\n` +
+  `👑 \`/traders\` : 100x - 1000x Top Traders Leaderboard\n` +
   `🛡️ \`/scan <CA>\` : Security Audit & Snipe Links\n` +
   `🐋 \`/wallets\` : Smart Money Tracker & Whales\n` +
   `🧠 \`/ai\` : JEV & LLM AI Architecture\n\n` +
@@ -79,6 +80,7 @@ const HELP_TEXT =
   `• 💊 Pump.fun Live Creations & Raydium Migrations\n` +
   `• ⚡ 10m - 30m Verified Insider Drops\n` +
   `• 🚀 Fresh 100x Breakouts & High Volume Spikes\n` +
+  `• 👑 100x - 1000x Top Trader & Sniper Alerts\n` +
   `• 💼 Auto $2 Paper Trades, Breakeven Shields & TP Hits\n\n` +
   `_Sub-second predictive engine running 24/7._`;
 
@@ -532,9 +534,24 @@ async function handleActivity(chatId: string): Promise<void> {
 }
 
 async function handleTraders(chatId: string): Promise<void> {
-  const entries = await getRecentTraderEntries(10);
+  await sendTelegramMessageTo(chatId, "🔍 Fetching 100x - 1000x top traders & smart money snipers...");
+  let entries = await getRecentTraderEntries(10);
+  if (entries.length === 0) {
+    await scanAndRecord100xTopTraders().catch(() => 0);
+    entries = await getRecentTraderEntries(10);
+  }
   const text = formatTraderEntriesText(entries);
-  await sendTelegramMessageTo(chatId, text);
+  const buttons = [
+    [
+      { text: "⚡ Photon Terminal", url: "https://photon-sol.tinyastro.io" },
+      { text: "🐂 BullX Terminal", url: "https://neo.bullx.io" },
+    ],
+    [
+      { text: "📊 GMGN AI", url: "https://gmgn.ai/sol" },
+      { text: "📈 DexScreener", url: "https://dexscreener.com/solana" },
+    ],
+  ];
+  await sendTelegramMessageTo(chatId, text, buttons);
 }
 
 async function handleDiscover(chatId: string): Promise<void> {

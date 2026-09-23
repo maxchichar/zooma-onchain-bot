@@ -6,7 +6,7 @@ import { explainSignal } from "./llm.js";
 import { openPaperTrade } from "./paperTrading.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { fetchTokenPairs, getTokenImageUrl } from "./researchSources.js";
-import { recordTopTraderEntry } from "./topTraders.js";
+import { recordTopTraderEntry, get100xTopTrader } from "./topTraders.js";
 import { evaluateTokenRugRisk } from "./rugRisk.js";
 
 const ACCUMULATION_THRESHOLD = Number(process.env.ACCUMULATION_THRESHOLD ?? 3);
@@ -66,7 +66,7 @@ export function extractTrackedLegs(tx: HeliusEnhancedTx, trackedWallets: Set<str
   return legs;
 }
 
-/** Persists a parsed leg (idempotent — safe to call twice for the same webhook retry). */
+/** Persists a parsed leg (idempotent: safe to call twice for the same webhook retry). */
 async function saveEvent(leg: ParsedLeg): Promise<void> {
   const { error } = await supabase.from("raw_events").upsert(
     {
@@ -85,7 +85,7 @@ async function saveEvent(leg: ParsedLeg): Promise<void> {
 
 /**
  * Checks whether an existing, still-fresh signal of this type already
- * exists for this token — the anti-spam guard your brief asked for.
+ * exists for this token: the anti-spam guard your brief asked for.
  * Returns true if we should SKIP firing (cooldown active).
  */
 async function isInCooldown(tokenMint: string, signalType: string): Promise<boolean> {
@@ -161,16 +161,28 @@ async function handleWhaleBuy(leg: ParsedLeg): Promise<void> {
     },
   ]);
 
+  const topTraderRecord = get100xTopTrader(leg.wallet);
+  const title = topTraderRecord
+    ? ((topTraderRecord.multiplier_x ?? 0) >= 500
+        ? "👑 *[1000x SNIPER LEGEND BUY ALERT]*"
+        : "🏆 *[100x TOP TRADER BUY ALERT]*")
+    : "🐋 *[SMART MONEY BUY ALERT]*";
+
+  const legendSection = topTraderRecord
+    ? `🌟 *Proven Track Record:* Caught $${topTraderRecord.token_symbol ?? "Token"} early (${topTraderRecord.multiplier_x ? `${topTraderRecord.multiplier_x.toFixed(0)}x` : "100x+"} return)\n`
+    : "";
+
   const shortWallet = `${leg.wallet.slice(0, 6)}...${leg.wallet.slice(-4)}`;
   const symbolLine = pair?.baseToken?.symbol ? `*${pair.baseToken.name} ($${pair.baseToken.symbol})*\n` : "";
   const priceUsd = pair?.priceUsd ? `$${pair.priceUsd}` : "n/a";
   const liqUsd = pair?.liquidity?.usd ? `$${Math.round(pair.liquidity.usd).toLocaleString()}` : "n/a";
 
   const message =
-    `🐋 *[SMART MONEY BUY ALERT]*\n\n` +
+    `${title}\n\n` +
     symbolLine +
     `• Token CA: \`${leg.mint}\`\n` +
     `• Smart Buyer: \`${leg.wallet}\`\n` +
+    legendSection +
     `• Buy Size: *${leg.solAmount.toFixed(2)} SOL*\n` +
     `• Token Price: *${priceUsd}* | Liq: *${liqUsd}*\n\n` +
     `🛡️ *Rug Risk Audit:* ${rugAudit.verdict}\n` +
@@ -180,6 +192,19 @@ async function handleWhaleBuy(leg: ParsedLeg): Promise<void> {
     `⚡ *Execute instant trade on fast terminal:*`;
 
   await sendTelegramPhoto(imageUrl, message, getTokenTradingButtons(leg.mint));
+
+  // Record this entry for top trader tracking
+  recordTopTraderEntry({
+    walletAddress: leg.wallet,
+    tokenMint: leg.mint,
+    tokenSymbol: pair?.baseToken?.symbol,
+    entryPriceUsd: pair?.priceUsd ? Number(pair.priceUsd) : undefined,
+    solAmount: leg.solAmount,
+    tokenAmount: leg.tokenAmount,
+    txSignature: leg.signature,
+    source: "onchain_tx",
+    traderCategory: topTraderRecord ? (topTraderRecord.trader_category as any) : "smart_money",
+  }).catch(() => {});
 
   try {
     await openPaperTrade(signal.id, leg.mint, "whale_entry", pair?.priceUsd ? Number(pair.priceUsd) : undefined, pair);
@@ -287,7 +312,7 @@ async function checkAccumulation(tokenMint: string): Promise<void> {
 
   const evidence = [...byWallet.entries()].map(([wallet, e]) => ({ wallet, signature: e.signature }));
 
-  // JEV: advisory classification only — does NOT gate whether we notify.
+  // JEV: advisory classification only: does NOT gate whether we notify.
   const jevRead = await classifyAccumulationPattern({
     tokenMint,
     buys: [...byWallet.entries()].map(([wallet, e]) => ({

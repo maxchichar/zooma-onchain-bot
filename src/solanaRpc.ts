@@ -1,5 +1,8 @@
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
-const RPC_URL = () => `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
+const RPC_URL = () =>
+  HELIUS_API_KEY
+    ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`
+    : "https://api.mainnet-beta.solana.com";
 
 export async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
   const res = await fetch(RPC_URL(), {

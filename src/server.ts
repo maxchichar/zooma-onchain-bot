@@ -12,6 +12,7 @@ import { pollTrackedWalletsActivity } from "./walletTracker.js";
 import { checkOpenTrades, sendPerformanceDigest, sendPeriodicPortfolioDigest } from "./paperTrading.js";
 import { sendWalletScoreDigest } from "./walletScoring.js";
 import { sendResearchScoreDigest } from "./researchScoring.js";
+import { scanAndRecord100xTopTraders } from "./topTraders.js";
 import { handleTelegramUpdate } from "./telegramCommands.js";
 import { HeliusEnhancedTx } from "./types.js";
 
@@ -69,7 +70,7 @@ app.post("/webhooks/helius", async (req, res) => {
     return;
   }
 
-  // Acknowledge immediately, then process — Helius retries on non-2xx and
+  // Acknowledge immediately, then process: Helius retries on non-2xx and
   // on timeout, and we don't want a slow DB round-trip to cause duplicate
   // deliveries. Processing is idempotent (dedup on signature+wallet) so
   // even a retry that slips through is harmless.
@@ -86,7 +87,7 @@ app.post("/webhooks/helius", async (req, res) => {
 });
 
 // ---------- Telegram slash command receiver ----------
-// Separate from the Helius webhook above — different sender, different
+// Separate from the Helius webhook above: different sender, different
 // auth mechanism (Telegram's own secret-token header, set via
 // setWebhook's secret_token param, not an Authorization header).
 const TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
@@ -171,7 +172,7 @@ setInterval(async () => {
 // Actions cron. This is the "maximize" path: it isn't bound by GitHub's
 // free-minute budget or scheduling delays, and can run as often as you
 // want. runDiscoveryOnce() itself enforces MAX_TRACKED_WALLETS, so
-// running this frequently is safe — it just becomes a no-op once you hit
+// running this frequently is safe: it just becomes a no-op once you hit
 // the cap you've set, rather than something that needs separate throttling
 // here.
 const DISCOVERY_INTERVAL_MINUTES = Number(process.env.DISCOVERY_INTERVAL_MINUTES ?? 3);
@@ -182,7 +183,7 @@ setInterval(async () => {
   discoveryInFlight = true;
   try {
     await runDiscoveryOnce();
-    // Wallet list may have grown — force the webhook-address cache to
+    // Wallet list may have grown: force the webhook-address cache to
     // refresh on the next incoming transaction rather than waiting out
     // the full TTL.
     cacheLoadedAt = 0;
@@ -253,8 +254,28 @@ setInterval(async () => {
   }
 }, TRENDING_ALERT_INTERVAL_MINUTES * 60 * 1000);
 
+// ---------- In-process 100x-1000x top trader scanner scheduler ----------
+// Finds tokens that surged 50x-1000x and records the low-entry wallets and snipers
+const TOP_TRADER_SCAN_INTERVAL_MINUTES = Number(process.env.TOP_TRADER_SCAN_INTERVAL_MINUTES ?? 10);
+let topTraderScanInFlight = false;
+
+setInterval(async () => {
+  if (topTraderScanInFlight) return;
+  topTraderScanInFlight = true;
+  try {
+    const recorded = await scanAndRecord100xTopTraders();
+    if (recorded > 0) {
+      console.log(`[server] recorded ${recorded} new 100x-1000x top trader wallet(s)`);
+    }
+  } catch (err) {
+    console.error("[server] top trader scan failed:", err);
+  } finally {
+    topTraderScanInFlight = false;
+  }
+}, TOP_TRADER_SCAN_INTERVAL_MINUTES * 60 * 1000);
+
 // ---------- In-process research scheduler (meme coins, NFTs) ----------
-// Separate from wallet-pattern discovery above — different data sources
+// Separate from wallet-pattern discovery above: different data sources
 // (DexScreener/LunarCrush/Magic Eden, not Helius), different cadence.
 const RESEARCH_INTERVAL_MINUTES = Number(process.env.RESEARCH_INTERVAL_MINUTES ?? 15);
 let researchInFlight = false;
@@ -309,7 +330,7 @@ setInterval(async () => {
 }, PORTFOLIO_DIGEST_INTERVAL_MINUTES * 60 * 1000);
 
 // ---------- In-process wallet credibility scoring ----------
-// Weekly by default — this depends on paper trades having closed, which
+// Weekly by default: this depends on paper trades having closed, which
 // itself takes time, so there's no benefit to running it more often
 // early on. Fully deterministic, no JEV/LLM in the scoring math itself.
 const WALLET_SCORE_INTERVAL_HOURS = Number(process.env.WALLET_SCORE_INTERVAL_HOURS ?? 168);
@@ -325,7 +346,7 @@ setInterval(async () => {
 // ---------- In-process research signal scoring ----------
 // Same cadence as wallet scoring, same reason (depends on paper trades
 // having closed). Checks whether JEV's risk read is actually calibrated
-// for meme coins/NFTs — a distinct question from wallet credibility,
+// for meme coins/NFTs: a distinct question from wallet credibility,
 // since tokens/collections aren't reusable entities the way wallets are.
 setInterval(async () => {
   try {
