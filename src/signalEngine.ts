@@ -7,6 +7,7 @@ import { openPaperTrade } from "./paperTrading.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { fetchTokenPairs, getTokenImageUrl } from "./researchSources.js";
 import { recordTopTraderEntry } from "./topTraders.js";
+import { evaluateTokenRugRisk } from "./rugRisk.js";
 
 const ACCUMULATION_THRESHOLD = Number(process.env.ACCUMULATION_THRESHOLD ?? 3);
 const ACCUMULATION_WINDOW_MINUTES = Number(process.env.ACCUMULATION_WINDOW_MINUTES ?? 120);
@@ -132,24 +133,32 @@ async function fireSignal(
 
   const jevRead = details.jev_read as AccumulationClassification | null;
   const jevLine = jevRead
-    ? `\nJEV read: *${jevRead.pattern}* (confidence ${(jevRead.confidence * 100).toFixed(0)}%) — a model classification, not proof.`
+    ? `\n• Pattern AI: *${jevRead.pattern}* (${(jevRead.confidence * 100).toFixed(0)}% confidence)`
     : "";
 
   const body = explanation
     ? explanation.trim()
-    : `${evidenceSignatures.length} tracked wallet(s) bought this token within the window — rule-based detection, no AI explanation available for this alert.`;
-
-  const message =
-    `*[UNVALIDATED] ${signalType}*\n` +
-    `Token: \`${tokenMint}\`\n\n` +
-    `${body}${jevLine}\n\n` +
-    `Tracked wallets: ${walletList}\n` +
-    `Evidence: ${evidenceSignatures.length} on-chain transaction(s) — see signal_evidence table for signatures\n\n` +
-    `_Rule-triggered signal. Not backtested. Not financial advice._`;
+    : `${evidenceSignatures.length} smart money wallet(s) accumulated this token within the time window.`;
 
   const pairs = await fetchTokenPairs(tokenMint).catch(() => []);
   const pair = pairs.length > 0 ? pairs[0] : undefined;
   const imageUrl = getTokenImageUrl(tokenMint, pair);
+  const rugAudit = await evaluateTokenRugRisk(tokenMint, { liquidityUsd: pair?.liquidity?.usd });
+
+  const symbolLine = pair?.baseToken?.symbol ? `• Symbol: *$${pair.baseToken.symbol}* | DEX: *${pair.dexId}*\n` : "";
+  const marketLine = pair?.priceUsd ? `• Price: *$${pair.priceUsd}* | Liq: *$${Math.round(pair.liquidity?.usd ?? 0).toLocaleString()}*\n` : "";
+
+  const message =
+    `🎯 *[ALERT] Smart Money Accumulation*\n\n` +
+    `• Token CA: \`${tokenMint}\`\n` +
+    symbolLine +
+    marketLine +
+    `\n📋 *Pattern Analysis:*\n` +
+    `${body}${jevLine}\n\n` +
+    `🛡️ *Rug Risk Audit:* ${rugAudit.verdict}\n` +
+    `👥 *Tracked Buyers:* ${walletList}\n` +
+    `🧾 *Evidence:* ${evidenceSignatures.length} confirmed on-chain transaction(s)\n\n` +
+    `_Rule-triggered signal. Not financial advice._`;
 
   await sendTelegramPhoto(imageUrl, message, getTokenTradingButtons(tokenMint));
 

@@ -157,3 +157,89 @@ export async function checkDeployerHistory(mint: string): Promise<DeployerHistor
 
   return { deployer, otherTokensFound: otherTokens.length, likelyAbandonedCount, abandonedExamples };
 }
+
+export interface RugRiskAssessment {
+  mintAuthorityRenounced: boolean | null;
+  freezeAuthorityRenounced: boolean | null;
+  topHolderPct: number | null;
+  deployerHistory: DeployerHistory | null;
+  riskLevel: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  riskScore: number; // 0 to 100
+  verdict: string;
+  flags: string[];
+}
+
+/**
+ * Evaluates comprehensive rug pull risk for any Solana token.
+ */
+export async function evaluateTokenRugRisk(
+  mint: string,
+  options?: { topHolderPct?: number | null; liquidityUsd?: number | null }
+): Promise<RugRiskAssessment> {
+  const [authorities, deployerHistory] = await Promise.all([
+    checkMintAuthorities(mint).catch(() => null),
+    checkDeployerHistory(mint).catch(() => null),
+  ]);
+
+  const flags: string[] = [];
+  let score = 0;
+
+  if (authorities) {
+    if (!authorities.mintAuthorityRenounced) {
+      flags.push("🚨 Mint Authority ACTIVE: Deployer can print unlimited supply.");
+      score += 40;
+    }
+    if (!authorities.freezeAuthorityRenounced) {
+      flags.push("🚨 Freeze Authority ACTIVE: Deployer can blacklist/freeze holder wallets.");
+      score += 40;
+    }
+  }
+
+  const topHolder = options?.topHolderPct;
+  if (typeof topHolder === "number") {
+    if (topHolder > 40) {
+      flags.push(`🚨 Heavy Insider Control: Top holder owns ~${topHolder.toFixed(1)}% of top-20 balance.`);
+      score += 35;
+    } else if (topHolder > 20) {
+      flags.push(`⚠️ Concentrated Supply: Top holder owns ~${topHolder.toFixed(1)}% of top-20 balance.`);
+      score += 20;
+    }
+  }
+
+  if (deployerHistory && deployerHistory.likelyAbandonedCount > 0) {
+    flags.push(`⚠️ Serial Deployer Signal: ${deployerHistory.likelyAbandonedCount} prior token(s) by this wallet now have near-zero liquidity.`);
+    score += 25;
+  }
+
+  if (options?.liquidityUsd !== undefined && options.liquidityUsd !== null && options.liquidityUsd < 5000) {
+    flags.push(`⚠️ Thin Liquidity: Pool holds only $${Math.round(options.liquidityUsd).toLocaleString()} USD.`);
+    score += 15;
+  }
+
+  score = Math.min(100, score);
+
+  let riskLevel: RugRiskAssessment["riskLevel"] = "LOW";
+  let verdict = "🟢 LOW RUG RISK: Authorities renounced and no major flags.";
+
+  if (score >= 70) {
+    riskLevel = "CRITICAL";
+    verdict = "🚨 CRITICAL RUG RISK: High probability of scam or dump.";
+  } else if (score >= 40) {
+    riskLevel = "HIGH";
+    verdict = "⚠️ HIGH RISK: Active authorities or heavy concentration detected.";
+  } else if (score >= 20) {
+    riskLevel = "MEDIUM";
+    verdict = "🟡 MEDIUM RISK: Minor concentration or low liquidity.";
+  }
+
+  return {
+    mintAuthorityRenounced: authorities?.mintAuthorityRenounced ?? null,
+    freezeAuthorityRenounced: authorities?.freezeAuthorityRenounced ?? null,
+    topHolderPct: topHolder ?? null,
+    deployerHistory,
+    riskLevel,
+    riskScore: score,
+    verdict,
+    flags,
+  };
+}

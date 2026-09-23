@@ -98,21 +98,21 @@ async function fireResearchSignal(params: {
 
   const jevRead = params.details.jev_read as { level: string; confidence: number } | null;
   const jevLine = jevRead
-    ? `\nJEV risk read: *${jevRead.level.replace(/_/g, " ")}* (confidence ${(jevRead.confidence * 100).toFixed(0)}%) — a model classification, not proof.`
+    ? `\n• Risk AI: *${jevRead.level.replace(/_/g, " ")}* (${(jevRead.confidence * 100).toFixed(0)}% confidence)`
     : "";
 
   const body = params.explanation
     ? params.explanation.trim()
-    : `${params.headline} — rule-based detection, no AI explanation available for this alert.`;
+    : `${params.headline} (rule-based detection)`;
 
-  const evidenceLines = params.evidence.map((e) => `- ${e.source}: ${e.note}`).join("\n");
+  const evidenceLines = params.evidence.map((e) => `• ${e.source}: ${e.note}`).join("\n");
 
   const message =
-    `*[UNVALIDATED] [RESEARCH] WATCH*\n` +
-    `${params.category === "meme_coin_watch" ? "Token" : "Collection"}: \`${params.tokenOrSymbol}\`\n\n` +
-    `${body}${jevLine}\n\n` +
-    `Evidence:\n${evidenceLines}\n\n` +
-    `_High-risk category (meme coin / NFT). Not backtested. Not financial advice._`;
+    `🔬 *[RESEARCH WATCH] ${params.category === "meme_coin_watch" ? "Meme Coin" : "NFT Collection"}*\n\n` +
+    `• Target: \`${params.tokenOrSymbol}\`\n\n` +
+    `📋 *Overview:*\n${body}${jevLine}\n\n` +
+    `🧾 *Evidence & Signals:*\n${evidenceLines}\n\n` +
+    `_High-risk category. Not financial advice._`;
 
   const buttons =
     params.category === "nft_watch"

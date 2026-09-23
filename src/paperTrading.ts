@@ -178,13 +178,13 @@ async function closeTrade(trade: OpenTrade, exitPrice: number, exitReason: strin
     return;
   }
 
-  const resultWord = pnlAbsolute >= 0 ? "WIN" : "LOSS";
+  const resultWord = pnlAbsolute >= 0 ? "PROFIT" : "LOSS";
   await sendTelegramMessage(
-    `*[PAPER TRADE CLOSED — ${resultWord}]*\n` +
+    `*[PAPER TRADE CLOSED: ${resultWord}]*\n` +
       `${trade.category === "nft_watch" ? "Collection" : "Token"}: \`${trade.token_mint}\`\n` +
-      `Exit reason: ${exitReason}\n` +
-      `PnL: ${pnlPct.toFixed(1)}% (${pnlAbsolute.toFixed(2)} ${trade.quote_currency.toUpperCase()}, fees ${fees.toFixed(2)} included)\n\n` +
-      `_Simulated only — no real funds involved._`
+      `• Exit Reason: ${exitReason}\n` +
+      `• PnL: *${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%* (${pnlAbsolute.toFixed(2)} ${trade.quote_currency.toUpperCase()}, fees ${fees.toFixed(2)} included)\n\n` +
+      `_Simulated only (no real funds involved)._`
   );
 }
 
@@ -237,7 +237,7 @@ export interface PaperTradingStats {
   profitFactor: number | null;
   expectancyPct: number | null;
   maxDrawdownPct: number | null;
-  verdict: "NO EDGE DETECTED" | "POSITIVE EXPECTANCY — STILL SMALL SAMPLE" | "INSUFFICIENT DATA";
+  verdict: "NO EDGE DETECTED" | "POSITIVE EXPECTANCY (SMALL SAMPLE)" | "INSUFFICIENT DATA";
 }
 
 /**
@@ -301,7 +301,7 @@ export async function computeStats(windowDays: number, category?: Category): Pro
   }
 
   const verdict: PaperTradingStats["verdict"] =
-    expectancyPct > 0 ? "POSITIVE EXPECTANCY — STILL SMALL SAMPLE" : "NO EDGE DETECTED";
+    expectancyPct > 0 ? "POSITIVE EXPECTANCY (SMALL SAMPLE)" : "NO EDGE DETECTED";
 
   return {
     windowDays,
@@ -318,29 +318,30 @@ export async function computeStats(windowDays: number, category?: Category): Pro
 
 function formatStats(label: string, stats: PaperTradingStats): string {
   if (stats.closedTrades === 0) {
-    return `${label}: no closed trades yet — nothing to report.`;
+    return `*${label}:* 0 closed trades (no data yet)`;
   }
   const currencyLines = Object.entries(stats.totalPnlByCurrency)
     .map(([cur, total]) => `${total.toFixed(2)} ${cur.toUpperCase()}`)
     .join(", ");
   return (
-    `${label}: ${stats.closedTrades} closed trades\n` +
-    `Win rate: ${((stats.winRate ?? 0) * 100).toFixed(0)}% | Avg PnL: ${stats.avgPnlPct?.toFixed(1)}% | ` +
-    `Profit factor: ${stats.profitFactor === Infinity ? "∞ (no losses)" : stats.profitFactor?.toFixed(2)}\n` +
-    `Total PnL: ${currencyLines || "n/a"} | Max drawdown: ${stats.maxDrawdownPct?.toFixed(1)}%\n` +
-    `Verdict: *${stats.verdict}*`
+    `*${label} (${stats.closedTrades} closed trades):*\n` +
+    `• Win Rate: *${((stats.winRate ?? 0) * 100).toFixed(0)}%* | Avg PnL: *${stats.avgPnlPct?.toFixed(1)}%*\n` +
+    `• Profit Factor: *${stats.profitFactor === Infinity ? "∞ (no losses)" : stats.profitFactor?.toFixed(2)}*\n` +
+    `• Total PnL: *${currencyLines || "n/a"}* | Max Drawdown: *${stats.maxDrawdownPct?.toFixed(1)}%*\n` +
+    `• Verdict: *${stats.verdict}*`
   );
 }
 
-/** Sends a periodic performance digest to Telegram. Call on a schedule (e.g. daily). */
+/** Sends a periodic performance digest to Telegram. */
 export async function sendPerformanceDigest(): Promise<void> {
   const [d7, d30, d90] = await Promise.all([computeStats(7), computeStats(30), computeStats(90)]);
 
   const message =
-    `*[PAPER TRADING DIGEST]*\n` +
-    `Answers: "if I'd followed every signal, what would have happened?"\n\n` +
-    `${formatStats("Last 7 days", d7)}\n\n${formatStats("Last 30 days", d30)}\n\n${formatStats("Last 90 days", d90)}\n\n` +
-    `_All simulated. A verdict is only meaningful once closed-trade counts are reasonably large (rule of thumb: 20+) — small-sample results can flip._`;
+    `📊 *[PAPER TRADING PERFORMANCE DIGEST]*\n\n` +
+    `${formatStats("Last 7 Days", d7)}\n\n` +
+    `${formatStats("Last 30 Days", d30)}\n\n` +
+    `${formatStats("Last 90 Days", d90)}\n\n` +
+    `_Statistical Note: Expectancy metrics become robust after 20+ closed trades._`;
 
   await sendTelegramMessage(message);
 }

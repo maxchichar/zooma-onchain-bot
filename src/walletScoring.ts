@@ -206,7 +206,7 @@ export async function sendWalletScoreDigest(): Promise<void> {
   const scored = results.filter((r) => r.tradesWithOutcome > 0);
   if (scored.length === 0) {
     await sendTelegramMessage(
-      `*[WALLET CREDIBILITY DIGEST]*\n${results.length} wallet(s) tracked, none have a closed paper trade yet — check back once signals start resolving.`
+      `*[WALLET CREDIBILITY DIGEST]*\n${results.length} wallet(s) tracked. No closed paper trades yet. Scores will compute once trades resolve.`
     );
     return;
   }

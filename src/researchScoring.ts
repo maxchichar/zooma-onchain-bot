@@ -179,7 +179,7 @@ export async function sendResearchScoreDigest(): Promise<void> {
     const rug = bs.find((b) => b.jevLevel === "classic_rug_setup" && b.tradesWithOutcome >= MIN_TRADES_FOR_NOTE);
     if (organic && rug && (rug.avgPnlPct ?? -Infinity) > (organic.avgPnlPct ?? Infinity)) {
       calibrationWarnings.push(
-        `⚠ ${category}: "classic_rug_setup" trades outperformed "looks_organic" trades — JEV's risk read isn't calibrated for this category yet.`
+        `⚠️ ${category}: "classic_rug_setup" trades outperformed "looks_organic" trades (JEV risk calibration adjustment needed).`
       );
     }
   }
