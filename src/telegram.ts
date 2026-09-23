@@ -48,11 +48,13 @@ export function registerActiveChat(chatId: string): void {
 
 export function getBroadcastChatIds(): string[] {
   const ids = new Set<string>();
-  if (DEFAULT_CHAT_ID) {
+  if (DEFAULT_CHAT_ID && DEFAULT_CHAT_ID !== "8653623689") {
     ids.add(DEFAULT_CHAT_ID);
   }
   for (const id of activeChatIds) {
-    ids.add(id);
+    if (id !== "8653623689") {
+      ids.add(id);
+    }
   }
   return Array.from(ids);
 }
@@ -99,19 +101,28 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
     ? { inline_keyboard: buttons.map((row) => row.map((b) => ({ text: b.text, url: b.url }))) }
     : undefined;
 
-  const caption = captionText.length > 1024 ? captionText.slice(0, 1020) + "..." : captionText;
+  const localPath = fs.existsSync(photoSource)
+    ? photoSource
+    : path.resolve(process.cwd(), photoSource);
+  const isLocalFile = fs.existsSync(localPath);
+
+  // If caption is too long for Telegram (limit 1024), send photo with first line, then full text
+  const isCaptionTooLong = captionText.length > 1020;
+  const photoCaption = isCaptionTooLong ? captionText.split("\n")[0] : captionText;
 
   try {
     let res: Response;
-    if (fs.existsSync(photoSource)) {
-      const fileBuffer = fs.readFileSync(photoSource);
-      const filename = path.basename(photoSource);
+    if (isLocalFile) {
+      const fileBuffer = fs.readFileSync(localPath);
+      const filename = path.basename(localPath);
       const formData = new FormData();
       formData.append("chat_id", chatId);
       formData.append("photo", new Blob([fileBuffer], { type: "image/jpeg" }), filename);
-      formData.append("caption", caption);
-      formData.append("parse_mode", "Markdown");
-      if (replyMarkup) {
+      if (photoCaption) {
+        formData.append("caption", photoCaption);
+        formData.append("parse_mode", "Markdown");
+      }
+      if (!isCaptionTooLong && replyMarkup) {
         formData.append("reply_markup", JSON.stringify(replyMarkup));
       }
 
@@ -126,15 +137,20 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
         body: JSON.stringify({
           chat_id: chatId,
           photo: photoSource,
-          caption: caption,
-          parse_mode: "Markdown",
-          ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+          ...(photoCaption ? { caption: photoCaption, parse_mode: "Markdown" } : {}),
+          ...((!isCaptionTooLong && replyMarkup) ? { reply_markup: replyMarkup } : {}),
         }),
       });
     }
 
     if (!res.ok) {
-      console.warn(`[telegram] sendPhoto returned ${res.status}, falling back to sendMessage`);
+      const errText = await res.text();
+      console.warn(`[telegram] sendPhoto returned ${res.status}: ${errText}, falling back to sendMessage`);
+      await rawSend(chatId, captionText, buttons);
+      return;
+    }
+
+    if (isCaptionTooLong) {
       await rawSend(chatId, captionText, buttons);
     }
   } catch (err) {

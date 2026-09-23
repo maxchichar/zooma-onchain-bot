@@ -59,24 +59,21 @@ const HELP_TEXT =
   `🤖 *ZOOMA Onchain Intelligence*\n` +
   `_Automated Solana Breakout Engine & Paper Trader_\n\n` +
   `⚡ *Primary Commands:*\n` +
-  `💊 \`/pump\` : Live Millisecond Pump.fun Drops & Graduations\n` +
-  `⚡ \`/insider\` : Ultra-Early Launches (10 - 30m old) & Fast Snipe\n` +
+  `💊 \`/pump\` : Live Pump.fun Drops & Graduations\n` +
+  `⚡ \`/insider\` : Ultra-Early Launches (10 - 30m old)\n` +
   `💎 \`/gems\` : Live Fresh Gems (< 48h) & 100x Breakouts\n` +
-  `🔥 \`/trending\` : Top 15 Live Trending Solana Tokens\n` +
-  `💼 \`/papertrade [CA]\` : Trade CA ($2 USD) or Toggle/Configure\n` +
+  `🔥 \`/trending\` : Top 15 Trending Solana Tokens\n` +
+  `💼 \`/papertrade [CA]\` : Trade CA ($2 USD) / Configure\n` +
   `📈 \`/positions\` : Live Paper Portfolio & Real-Time PnL\n` +
-  `🛡️ \`/scan <CA>\` : Instant Token Security Audit & Snipe Links\n` +
-  `🐋 \`/wallets\` : Smart Money Tracker & On-Chain Flow\n` +
-  `🧠 \`/ai\` : What JEV & LLM Models Are Doing\n\n` +
-  `🔔 *Automated Real-Time Alerts (24/7):*\n` +
-  `• 💊 Sub-second Pump.fun New Creations & Graduations\n` +
-  `• ⚡ Ultra-Early 10m - 30m Insider Drops\n` +
-  `• 🚀 Fresh 100x & Solid Gem Breakouts\n` +
-  `• 🔥 Viral Trending Solana Volume Spikes\n` +
-  `• 💼 Automated $2 Paper Trades Opened\n` +
-  `• 🎯 Take-Profit (+50%) & Stop-Loss (-20%) Hits\n` +
-  `• 🐋 Whale Accumulation & Smart Money Buys\n\n` +
-  `_Sub-second predictive engine alerting you in real time as market events occur._`;
+  `🛡️ \`/scan <CA>\` : Security Audit & Snipe Links\n` +
+  `🐋 \`/wallets\` : Smart Money Tracker & Whales\n` +
+  `🧠 \`/ai\` : JEV & LLM AI Architecture\n\n` +
+  `🔔 *Automated 24/7 Alerts:*\n` +
+  `• 💊 Pump.fun Live Creations & Raydium Migrations\n` +
+  `• ⚡ 10m - 30m Verified Insider Drops\n` +
+  `• 🚀 Fresh 100x Breakouts & High Volume Spikes\n` +
+  `• 💼 Auto $2 Paper Trades & Take-Profit (+50%) Hits\n\n` +
+  `_Sub-second predictive engine running 24/7._`;
 
 async function handleWatch(chatId: string, address: string | undefined): Promise<void> {
   if (!address || !SOLANA_ADDRESS_RE.test(address)) {
