@@ -10,6 +10,8 @@
  */
 import { rpcCall, getDetailedHolderDistribution } from "./solanaRpc.js";
 import { fetchTokenPairs, DexScreenerPair } from "./researchSources.js";
+import { classifyRugRiskDetailed } from "./jev.js";
+import { explainRugRisk } from "./llm.js";
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HELIUS_BASE = "https://api.helius.xyz/v0";
@@ -206,6 +208,13 @@ export interface RugRiskAssessment {
   verdict: string;
   checklist: SecurityCheckItem[];
   flags: string[];
+  jevAnalysis?: {
+    level: string;
+    confidence: number;
+    badge: string;
+    summary: string;
+  } | null;
+  aiExplanation?: string | null;
 }
 
 /**
@@ -217,6 +226,7 @@ export async function evaluateTokenRugRisk(
     topHolderPct?: number | null;
     liquidityUsd?: number | null;
     pair?: DexScreenerPair;
+    includeAiAnalysis?: boolean;
   }
 ): Promise<RugRiskAssessment> {
   const [authorities, deployerHistory, distribution] = await Promise.all([
@@ -437,6 +447,59 @@ export async function evaluateTokenRugRisk(
     verdict = "🟡 MODERATE RISK: Minor supply concentration or thin pool liquidity.";
   }
 
+  let jevAnalysis: RugRiskAssessment["jevAnalysis"] = null;
+  let aiExplanation: string | null = null;
+
+  if (options?.includeAiAnalysis) {
+    try {
+      const [jevRes, llmRes] = await Promise.all([
+        classifyRugRiskDetailed({
+          tokenMint: mint,
+          mintAuthorityRenounced: authorities?.mintAuthorityRenounced ?? null,
+          freezeAuthorityRenounced: authorities?.freezeAuthorityRenounced ?? null,
+          isToken2022: authorities?.isToken2022 ?? false,
+          hasTransferFee: authorities?.hasTransferFee ?? false,
+          transferFeePct: authorities?.transferFeePct ?? 0,
+          hasPermanentDelegate: authorities?.hasPermanentDelegate ?? false,
+          isDefaultFrozen: authorities?.isDefaultFrozen ?? false,
+          topHolderPct: top1,
+          top10HolderPct: top10,
+          deployerAbandonedCount: deployerHistory?.likelyAbandonedCount ?? null,
+          liquidityUsd: liqUsd,
+          securityScore,
+        }).catch(() => null),
+        explainRugRisk({
+          tokenMint: mint,
+          tokenName: options?.pair?.baseToken?.name,
+          tokenSymbol: options?.pair?.baseToken?.symbol,
+          securityScore,
+          mintAuthorityRenounced: authorities?.mintAuthorityRenounced ?? null,
+          freezeAuthorityRenounced: authorities?.freezeAuthorityRenounced ?? null,
+          isToken2022: authorities?.isToken2022 ?? false,
+          transferFeePct: authorities?.transferFeePct ?? 0,
+          hasPermanentDelegate: authorities?.hasPermanentDelegate ?? false,
+          isDefaultFrozen: authorities?.isDefaultFrozen ?? false,
+          top1HolderPct: top1,
+          top10HolderPct: top10,
+          deployerAbandonedCount: deployerHistory?.likelyAbandonedCount ?? null,
+          flags,
+        }).catch(() => null),
+      ]);
+
+      if (jevRes) {
+        jevAnalysis = {
+          level: jevRes.level,
+          confidence: jevRes.confidence,
+          badge: jevRes.badge,
+          summary: jevRes.summary,
+        };
+      }
+      aiExplanation = llmRes;
+    } catch {
+      // Continue gracefully without AI analysis
+    }
+  }
+
   return {
     mintAuthorityRenounced: authorities?.mintAuthorityRenounced ?? null,
     freezeAuthorityRenounced: authorities?.freezeAuthorityRenounced ?? null,
@@ -454,5 +517,7 @@ export async function evaluateTokenRugRisk(
     verdict,
     checklist,
     flags,
+    jevAnalysis,
+    aiExplanation,
   };
 }

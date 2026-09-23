@@ -27,6 +27,8 @@ import { scanEarly100xGems } from "./early100xGems.js";
 import { fetchTopTrendingSolanaTokens, TrendingTokenDetail } from "./trendingAlerter.js";
 import { scanInsiderDrops } from "./insiderSniper.js";
 import { getRecentPumpDrops } from "./pumpFunStream.js";
+import { classifyPumpDrop } from "./jev.js";
+import { explainPumpDrop } from "./llm.js";
 import {
   getWalletIdenticonUrl,
   inspectWalletDetail,
@@ -234,13 +236,23 @@ async function handleScan(chatId: string, address: string | undefined): Promise<
   ]);
 
   if (pairs.length === 0) {
-    const rugAudit = await evaluateTokenRugRisk(address);
+    const rugAudit = await evaluateTokenRugRisk(address, { includeAiAnalysis: true });
     const scoreEmoji = rugAudit.securityScore >= 80 ? "🟢" : rugAudit.securityScore >= 50 ? "🟡" : "🚨";
+
+    let aiSection = "";
+    if (rugAudit.jevAnalysis) {
+      aiSection += `🤖 *JEV AI Risk Read:* ${rugAudit.jevAnalysis.badge} (${(rugAudit.jevAnalysis.confidence * 100).toFixed(0)}% confidence)\n`;
+    }
+    if (rugAudit.aiExplanation) {
+      aiSection += `🧠 *AI Risk Audit:* _${rugAudit.aiExplanation}_\n\n`;
+    }
+
     const text =
       `🔬 *Token Security Audit*\n\n` +
-      `• CA: \`${address}\`\n\n` +
+      `• Token CA: \`${address}\`\n\n` +
       `🛡️ *Rug Pull Security Score: ${scoreEmoji} ${rugAudit.securityScore}/100*\n` +
       `• Verdict: *${rugAudit.verdict}*\n\n` +
+      aiSection +
       `📋 *Security Checklist:*\n` +
       rugAudit.checklist.map((c) => `• ${c.name}: *${c.badge}*`).join("\n") + "\n\n" +
       `ℹ️ _No active Raydium pool listed yet._\n\n` +
@@ -257,12 +269,21 @@ async function handleScan(chatId: string, address: string | undefined): Promise<
   const price = pair.priceUsd ? (Number(pair.priceUsd) < 0.01 ? `$${Number(pair.priceUsd).toFixed(6)}` : `$${Number(pair.priceUsd).toFixed(4)}`) : "n/a";
   const fdv = pair.fdv ? `$${Math.round(pair.fdv).toLocaleString()}` : "n/a";
 
-  const rugAudit = await evaluateTokenRugRisk(address, { topHolderPct: topHolder, liquidityUsd: liqUsd, pair });
+  const rugAudit = await evaluateTokenRugRisk(address, { topHolderPct: topHolder, liquidityUsd: liqUsd, pair, includeAiAnalysis: true });
   const scoreEmoji = rugAudit.securityScore >= 80 ? "🟢" : rugAudit.securityScore >= 50 ? "🟡" : "🚨";
+
+  let aiSection = "";
+  if (rugAudit.jevAnalysis) {
+    aiSection += `🤖 *JEV AI Model:* ${rugAudit.jevAnalysis.badge} (${(rugAudit.jevAnalysis.confidence * 100).toFixed(0)}% confidence)\n`;
+  }
+  if (rugAudit.aiExplanation) {
+    aiSection += `🧠 *Groq AI Security Audit:* _${rugAudit.aiExplanation}_\n\n`;
+  }
 
   let rugSection =
     `🛡️ *Rug Pull Security Score: ${scoreEmoji} ${rugAudit.securityScore}/100*\n` +
     `• Verdict: *${rugAudit.verdict}*\n\n` +
+    aiSection +
     `📋 *Security Audit Checklist:*\n` +
     rugAudit.checklist.map((c) => `• ${c.name}: *${c.badge}* (${c.detail})`).join("\n") + "\n";
 
@@ -665,6 +686,36 @@ async function handlePumpDrops(chatId: string): Promise<void> {
       ? `🎓 *[PUMP.FUN RAYDIUM GRADUATION]*`
       : `💊 *[PUMP.FUN INSTANT DROP | MILLISECOND SNIPER]*`;
 
+    const [jevRead, llmExplanation] = await Promise.all([
+      classifyPumpDrop({
+        mint: drop.mint,
+        name: drop.name,
+        symbol: drop.symbol,
+        devHoldingPct: drop.devHoldingPct,
+        solAmount: drop.solAmount,
+        marketCapSol: drop.marketCapSol,
+        isGraduation: Boolean(drop.isRaydiumGraduation),
+      }).catch(() => null),
+      explainPumpDrop({
+        tokenMint: drop.mint,
+        name: drop.name,
+        symbol: drop.symbol,
+        devHoldingPct: drop.devHoldingPct,
+        solAmount: drop.solAmount,
+        marketCapSol: drop.marketCapSol,
+        isGraduation: Boolean(drop.isRaydiumGraduation),
+      }).catch(() => null),
+    ]);
+
+    let aiSection = "";
+    if (jevRead) {
+      aiSection += `🤖 *JEV AI Read:* ${jevRead.badge} (${(jevRead.confidence * 100).toFixed(0)}% confidence)\n`;
+    }
+    if (llmExplanation) {
+      aiSection += `🧠 *AI Synthesis:* _${llmExplanation}_\n`;
+    }
+    if (aiSection) aiSection += "\n";
+
     const text =
       `${eventTitle}\n\n` +
       `*${drop.name} ($${drop.symbol})*\n` +
@@ -674,6 +725,7 @@ async function handlePumpDrops(chatId: string): Promise<void> {
       `• Dev Supply Share: ${devStatus}\n` +
       `• Initial Valuation: *~${drop.marketCapSol.toFixed(1)} SOL* (Early micro-entry)\n` +
       `• Dev Wallet: \`${drop.traderPublicKey ? drop.traderPublicKey.slice(0, 6) + "..." + drop.traderPublicKey.slice(-4) : "Anonymous"}\`\n\n` +
+      aiSection +
       `🛡️ *Contract Safety Fundamentals:*\n` +
       `• Mint Authority: ✅ Renounced (Pump.fun program enforced)\n` +
       `• Freeze Authority: ✅ Renounced (No blacklist possible)\n` +

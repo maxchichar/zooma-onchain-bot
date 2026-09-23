@@ -9,6 +9,8 @@ import { supabase } from "./supabase.js";
 import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { openPaperTrade, isPaperTradingActive } from "./paperTrading.js";
+import { classifyPumpDrop } from "./jev.js";
+import { explainPumpDrop } from "./llm.js";
 
 const PUMP_WS_URL = "wss://pumpportal.fun/api/data";
 const TOTAL_PUMP_SUPPLY = 1_000_000_000; // 1 Billion tokens standard on Pump.fun
@@ -140,6 +142,36 @@ async function processPumpDrop(data: any): Promise<void> {
     ? `🟡 Moderate (${devHoldingPct}% supply)`
     : `⚠️ High (${devHoldingPct}% supply)`;
 
+  const [jevRead, llmExplanation] = await Promise.all([
+    classifyPumpDrop({
+      mint: drop.mint,
+      name: drop.name,
+      symbol: drop.symbol,
+      devHoldingPct,
+      solAmount,
+      marketCapSol,
+      isGraduation,
+    }).catch(() => null),
+    explainPumpDrop({
+      tokenMint: drop.mint,
+      name: drop.name,
+      symbol: drop.symbol,
+      devHoldingPct,
+      solAmount,
+      marketCapSol,
+      isGraduation,
+    }).catch(() => null),
+  ]);
+
+  let aiSection = "";
+  if (jevRead) {
+    aiSection += `🤖 *JEV AI Read:* ${jevRead.badge} (${(jevRead.confidence * 100).toFixed(0)}% confidence)\n`;
+  }
+  if (llmExplanation) {
+    aiSection += `🧠 *AI Synthesis:* _${llmExplanation}_\n`;
+  }
+  if (aiSection) aiSection += "\n";
+
   const message =
     `${eventTitle}\n\n` +
     `*${drop.name} ($${drop.symbol})*\n` +
@@ -149,6 +181,7 @@ async function processPumpDrop(data: any): Promise<void> {
     `• Dev Supply Share: ${devStatus}\n` +
     `• Initial Valuation: *~${marketCapSol.toFixed(1)} SOL* (Early micro-entry)\n` +
     `• Dev Wallet: \`${drop.traderPublicKey ? drop.traderPublicKey.slice(0, 6) + "..." + drop.traderPublicKey.slice(-4) : "Anonymous"}\`\n\n` +
+    aiSection +
     `🛡️ *Contract Safety Fundamentals:*\n` +
     `• Mint Authority: ✅ Renounced (Pump.fun program enforced)\n` +
     `• Freeze Authority: ✅ Renounced (No blacklist possible)\n` +
