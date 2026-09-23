@@ -174,8 +174,8 @@ export async function fireSolidGemAlert(gem: SolidGemCandidate): Promise<void> {
   await supabase.from("signal_evidence").insert([
     {
       signal_id: signal.id,
-      source: "solid_gem_audit",
-      reference: gem.tokenAddress,
+      signature: `audit_${gem.tokenAddress.slice(0, 16)}`,
+      wallet: gem.tokenAddress,
       note: `Authorities renounced, liq $${Math.round(gem.liquidityUsd).toLocaleString()}, vol $${Math.round(gem.volume24hUsd).toLocaleString()}, age ${gem.ageHours}h`,
     },
   ]);

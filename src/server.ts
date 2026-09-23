@@ -6,6 +6,7 @@ import { runResearchOnce } from "./research.js";
 import { runSolidGemScanOnce } from "./solidGems.js";
 import { runEarly100xScanOnce } from "./early100xGems.js";
 import { runTrendingAutoAlertOnce } from "./trendingAlerter.js";
+import { pollTrackedWalletsActivity } from "./walletTracker.js";
 import { checkOpenTrades, sendPerformanceDigest } from "./paperTrading.js";
 import { sendWalletScoreDigest } from "./walletScoring.js";
 import { sendResearchScoreDigest } from "./researchScoring.js";
@@ -109,14 +110,36 @@ app.listen(PORT, () => {
   console.log(`[server] listening on port ${PORT}`);
   loadTrackedWallets().then((w) => {
     console.log(`[server] tracking ${w.size} wallet(s) in real-time`);
-    // Kick off initial discovery, research, solid gem, early 100x, and trending alert passes immediately on boot (non-blocking)
+    // Kick off initial discovery, research, solid gem, early 100x, trending, and active wallet tracking on boot (non-blocking)
     runDiscoveryOnce().catch((err) => console.error("[server] initial discovery error:", err));
     runResearchOnce().catch((err) => console.error("[server] initial research error:", err));
     runSolidGemScanOnce().catch((err) => console.error("[server] initial solid gem scan error:", err));
     runEarly100xScanOnce().catch((err) => console.error("[server] initial early 100x scan error:", err));
     runTrendingAutoAlertOnce().catch((err) => console.error("[server] initial trending alert scan error:", err));
+    pollTrackedWalletsActivity().catch((err) => console.error("[server] initial wallet poll error:", err));
   });
 });
+
+// ---------- In-process active on-chain wallet tracking scheduler ----------
+// Actively polls tracked wallets for SWAP transactions on Solana via Helius API.
+// Ensures real-time detection of whale buys and accumulation patterns even if webhooks sleep.
+const WALLET_POLL_INTERVAL_SECONDS = Number(process.env.WALLET_POLL_INTERVAL_SECONDS ?? 45);
+let walletPollInFlight = false;
+
+setInterval(async () => {
+  if (walletPollInFlight) return;
+  walletPollInFlight = true;
+  try {
+    const newTxs = await pollTrackedWalletsActivity();
+    if (newTxs > 0) {
+      console.log(`[server] wallet tracker processed ${newTxs} new on-chain swap transaction(s)`);
+    }
+  } catch (err) {
+    console.error("[server] scheduled wallet polling error:", err);
+  } finally {
+    walletPollInFlight = false;
+  }
+}, WALLET_POLL_INTERVAL_SECONDS * 1000);
 
 // ---------- In-process discovery scheduler ----------
 // Runs inside the same always-on process instead of a separate GitHub

@@ -45,29 +45,21 @@ interface TelegramUpdate {
 }
 
 const HELP_TEXT =
-  `🤖 *ZOOMA Onchain Analysis Bot | Command Center*\n` +
-  `_Track. Analyze. Spot Alpha._\n\n` +
-  `*🚀 100x Potential & Solid Gems (< 48h):*\n` +
-  `• \`/100x\` or \`/early\` : Scan fresh micro-cap gems with 100x breakout runway\n` +
-  `• \`/solid\` or \`/gems\` : Scan & list verified non-rug pull solid tokens\n` +
-  `• \`/scan <token CA>\` : Complete rug check, photo, liquidity & fast trade links\n` +
-  `• \`/trending\` : Live trending Solana tokens with sniper buttons\n\n` +
-  `*📈 Live Paper Trading & Simulated Positions:*\n` +
-  `• \`/positions\` or \`/trades\` : View all active open simulated positions with live PnL\n` +
-  `• \`/pnl\` or \`/performance\` : View overall win-rate, total profit & expectancy\n\n` +
-  `*🐋 Smart Money & Whale Tracking (Up to 5,000):*\n` +
-  `• \`/whales\` : View recent large buys by smart money wallets\n` +
-  `• \`/activity\` or \`/feed\` : Real-time live on-chain swap stream\n` +
-  `• \`/traders\` : View recent entries of smart money traders\n` +
-  `• \`/list\` or \`/wallets\` : View all tracked wallets & system capacity\n` +
-  `• \`/wallet <address>\` : Deep dossier on any wallet with visual avatar & PnL\n` +
-  `• \`/watch <address>\` : Add a wallet to real-time tracking\n` +
-  `• \`/unwatch <address>\` : Remove a wallet from tracking\n` +
-  `• \`/discover\` : Trigger an instant wallet auto-discovery pass\n\n` +
-  `*📊 Analytics & Leaderboards:*\n` +
-  `• \`/status\` : 24h signal activity and system health\n` +
-  `• \`/scores\` : Wallet credibility leaderboard\n` +
-  `• \`/help\` : Show this guide`;
+  `🤖 *ZOOMA Onchain Intelligence*\n` +
+  `_Automated Solana Breakout Engine & Paper Trader_\n\n` +
+  `⚡ *Primary Commands:*\n` +
+  `💎 \`/gems\` : Live Fresh Gems (< 48h) & 100x Breakouts\n` +
+  `🔥 \`/trending\` : Top 15 Live Trending Solana Tokens\n` +
+  `📈 \`/positions\` : Live Paper Portfolio ($2 USD) & PnL\n` +
+  `🛡️ \`/scan <CA>\` : Instant Token Security Audit & Snipe Links\n` +
+  `🐋 \`/wallets\` : Smart Money Tracker & On-Chain Flow\n\n` +
+  `🔔 *Automated Real-Time Alerts (24/7):*\n` +
+  `• 🚀 Fresh 100x & Solid Gem Breakouts\n` +
+  `• 🔥 Viral Trending Solana Volume Spikes\n` +
+  `• 💼 Automated $2 Paper Trades Opened\n` +
+  `• 🎯 Take-Profit (+50%) & Stop-Loss (-20%) Hits\n` +
+  `• 🐋 Whale Accumulation & Smart Money Buys\n\n` +
+  `_No manual commands needed: the bot alerts you in real time as market events occur._`;
 
 async function handleWatch(chatId: string, address: string | undefined): Promise<void> {
   if (!address || !SOLANA_ADDRESS_RE.test(address)) {
@@ -116,7 +108,7 @@ async function handleList(chatId: string): Promise<void> {
     .order("added_at", { ascending: false });
 
   if (error || !wallets || wallets.length === 0) {
-    await sendTelegramMessageTo(chatId, "📋 Tracked Wallets: 0 active. Use `/watch <address>` to add wallets.");
+    await sendTelegramMessageTo(chatId, "🐋 *Tracked Wallets:* 0 active.\n\nUse `/watch <address>` to track a wallet or `/discover` to auto-harvest smart money.");
     return;
   }
 
@@ -126,24 +118,32 @@ async function handleList(chatId: string): Promise<void> {
   const autoCount = wallets.filter((w) => w.source !== "seed").length;
 
   let text =
-    `📋 *Tracked Wallets Capacity:* *${total}* / *${MAX_CAPACITY}* (${pct}%)\n` +
-    `• Seed Wallets: *${seedCount}* | Auto-Discovered: *${autoCount}*\n\n` +
-    `*Active Tracked Wallets:*\n`;
+    `🐋 *[SMART MONEY WALLET RADAR]*\n\n` +
+    `• Active Tracked Wallets: *${total}* / *${MAX_CAPACITY}* (${pct}%)\n` +
+    `• Seed Wallets: *${seedCount}* | Auto-Discovered: *${autoCount}*\n` +
+    `• Monitoring Engine: *Active On-Chain Polling + Helius Enhanced Webhooks*\n\n` +
+    `*Recent Smart Money Wallets:*\n`;
 
-  const displayList = wallets.slice(0, 25);
+  const displayList = wallets.slice(0, 15);
   for (let i = 0; i < displayList.length; i++) {
     const w = displayList[i];
     const short = `\`${w.address}\``;
-    text += `${i + 1}. ${short} (_${w.source}_)\n`;
+    const tag = w.source === "seed" ? "🎯 Seed" : "🤖 Auto";
+    text += `${i + 1}. ${short} | ${tag}\n`;
   }
 
-  if (total > 25) {
-    text += `\n_...and ${total - 25} more wallets tracked in real-time._\n`;
+  if (total > 15) {
+    text += `\n_...and ${total - 15} more active smart money wallets tracked 24/7._\n`;
   }
 
-  text += `\n💡 _Tip: Use \`/wallet <address>\` to view full dossier & avatar for any wallet._`;
+  text += `\n💡 _Tip: Use \`/wallet <address>\` for full dossier & avatar or \`/watch <address>\` to track a new wallet._`;
 
-  await sendTelegramMessageTo(chatId, text);
+  const topButtons = displayList.slice(0, 3).map((w) => [
+    { text: `🔍 Solscan (${w.address.slice(0, 4)}...${w.address.slice(-4)})`, url: `https://solscan.io/account/${w.address}` },
+    { text: `⚡ Photon Profile`, url: `https://photon-sol.tinyastro.io/en/u/${w.address}` },
+  ]);
+
+  await sendTelegramMessageTo(chatId, text, topButtons);
 }
 
 async function handleInspectWallet(chatId: string, address: string | undefined): Promise<void> {
@@ -317,33 +317,50 @@ async function handleTrending(chatId: string): Promise<void> {
   await sendTelegramMessageTo(chatId, text, top3Buttons);
 }
 
-async function handle100xGems(chatId: string): Promise<void> {
-  await sendTelegramMessageTo(chatId, "🚀 Scanning for early micro-cap tokens with 100x breakout potential & safe authorities...");
-  const gems = await scanEarly100xGems(3);
+async function handleLiveGems(chatId: string): Promise<void> {
+  await sendTelegramMessageTo(chatId, "💎 Scanning live Solana DEX pools (< 48h) for fresh 100x breakouts & verified solid gems...");
 
-  if (gems.length === 0) {
+  const [early100x, solid] = await Promise.all([
+    scanEarly100xGems(3).catch(() => []),
+    scanSolidGems(3).catch(() => []),
+  ]);
+
+  const allGems = [...early100x];
+  for (const s of solid) {
+    if (!allGems.some((g) => g.tokenAddress === s.tokenAddress)) {
+      allGems.push(s as any);
+    }
+  }
+
+  if (allGems.length === 0) {
     await sendTelegramMessageTo(
       chatId,
-      "ℹ️ No active micro-cap tokens (FDV < $1.5M, age < 48h, buy ratio > 55%) passed strict non-rug audits in current pool. Re-run `/100x` in a few minutes or check `/solid`."
+      "ℹ️ All fresh pools (< 48h) are currently being evaluated. The bot monitors the chain 24/7 and will auto-alert you the moment a new breakout gem passes security checks."
     );
     return;
   }
 
-  for (const gem of gems) {
+  // Send photo cards for top gems
+  const topGems = allGems.slice(0, 3);
+  for (let i = 0; i < topGems.length; i++) {
+    const gem = topGems[i];
+    openTrendingPaperTrade(gem.tokenAddress).catch(() => {});
+
     const imageUrl = getTokenImageUrl(gem.tokenAddress, gem.pair);
-    const buyRatioText = gem.buyRatioPct ? `• Buy Pressure: *${gem.buyRatioPct}% Buys* (Bullish)\n` : "";
     const holderText = gem.topHolderPct !== null ? `~${gem.topHolderPct.toFixed(1)}%` : "Safe";
+    const buyRatioText = (gem as any).buyRatioPct ? `• Buy Pressure: *${(gem as any).buyRatioPct.toFixed(0)}% Buys*\n` : "";
+    const runwayText = (gem as any).potentialMultiplier ? `• Growth Runway: *${(gem as any).potentialMultiplier}* (Low-Cap Entry)\n` : "";
 
     const text =
-      `🚀 *[100X POTENTIAL GEM]*\n\n` +
+      `💎 *[LIVE GEM BREAKOUT | #${i + 1}]*\n\n` +
       `*${gem.name} ($${gem.symbol})*\n` +
       `• CA: \`${gem.tokenAddress}\`\n\n` +
-      `📈 *Growth Runway:*\n` +
-      `• Estimated Upside: *${gem.potentialMultiplier}* (Low-Cap Entry)\n` +
+      `📊 *Live DEX Metrics:*\n` +
       `• Market Cap / FDV: *$${Math.round(gem.fdv).toLocaleString()}*\n` +
       `• Liquidity: *$${Math.round(gem.liquidityUsd).toLocaleString()}* | 24h Vol: *$${Math.round(gem.volume24hUsd).toLocaleString()}*\n` +
       `• Age: *${gem.ageHours}h old* | DEX: *${gem.dexId}*\n` +
       buyRatioText +
+      runwayText +
       `\n🛡️ *Security Audit (Verified Safe):*\n` +
       `• Mint Authority: ✅ Renounced\n` +
       `• Freeze Authority: ✅ Renounced\n` +
@@ -353,42 +370,25 @@ async function handle100xGems(chatId: string): Promise<void> {
 
     await sendTelegramPhotoTo(chatId, imageUrl, text, getTokenTradingButtons(gem.tokenAddress));
   }
-}
 
-async function handleSolid(chatId: string): Promise<void> {
-  await sendTelegramMessageTo(chatId, "💎 Scanning for verified non-rug pull solid tokens...");
-  const gems = await scanSolidGems(3);
-
-  if (gems.length === 0) {
-    await sendTelegramMessageTo(
-      chatId,
-      "ℹ️ No active tokens passed strict non-rug security audit (mint & freeze renounced, liq > $10k, top holder < 20%) in current batch. Re-run `/solid` in a few minutes or scan specific CA via `/scan <CA>`."
-    );
-    return;
+  // Also send a summary digest of all found gems
+  let summary = `💎 *Live Fresh Solana Gems (< 48h old)*\n\n`;
+  for (let i = 0; i < allGems.length; i++) {
+    const g = allGems[i];
+    const priceStr = Number(g.priceUsd) < 0.01 ? `$${Number(g.priceUsd).toFixed(6)}` : `$${Number(g.priceUsd).toFixed(4)}`;
+    summary += `${i + 1}. *${g.name} ($${g.symbol})*\n`;
+    summary += `   • CA: \`${g.tokenAddress}\`\n`;
+    summary += `   • Price: *${priceStr}* | FDV: *$${Math.round(g.fdv).toLocaleString()}* | Age: *${g.ageHours}h*\n\n`;
   }
+  summary += `_Simulated $2 paper trades automatically opened._\n_Use \`/scan <CA>\` for full security audit or tap any quick-trade button._`;
 
-  for (const gem of gems) {
-    const imageUrl = getTokenImageUrl(gem.tokenAddress, gem.pair);
-    const holderText = gem.topHolderPct !== null ? `~${gem.topHolderPct.toFixed(1)}%` : "Safe";
+  const topButtons = allGems.slice(0, 3).map((g) => [
+    { text: `⚡ Photon (${g.symbol})`, url: `https://photon-sol.tinyastro.io/en/lp/${g.tokenAddress}` },
+    { text: `🐂 BullX`, url: `https://neo.bullx.io/terminal?chainId=1399811149&address=${g.tokenAddress}` },
+    { text: `📊 GMGN`, url: `https://gmgn.ai/sol/token/${g.tokenAddress}` },
+  ]);
 
-    const text =
-      `💎 *[SOLID GEM]*\n\n` +
-      `*${gem.name} ($${gem.symbol})*\n` +
-      `• CA: \`${gem.tokenAddress}\`\n\n` +
-      `📊 *Metrics:*\n` +
-      `• Price: *$${gem.priceUsd}* | FDV: *$${Math.round(gem.fdv).toLocaleString()}*\n` +
-      `• Liquidity: *$${Math.round(gem.liquidityUsd).toLocaleString()}* | 24h Vol: *$${Math.round(gem.volume24hUsd).toLocaleString()}*\n` +
-      `• DEX: *${gem.dexId}* | Age: *${gem.ageHours}h*\n\n` +
-      `🛡️ *Security Audit (Verified Safe):*\n` +
-      `• Mint Authority: ✅ Renounced\n` +
-      `• Freeze Authority: ✅ Renounced\n` +
-      `• Top 1 Holder: ✅ ${holderText}\n` +
-      `• Deployer Audit: ✅ Clean background\n` +
-      `• Rug Risk: 🟢 *LOW RISK (${gem.rugAssessment.riskScore}/100)*\n\n` +
-      `⚡ *Fast Snipe & Trade Terminal:*`;
-
-    await sendTelegramPhotoTo(chatId, imageUrl, text, getTokenTradingButtons(gem.tokenAddress));
-  }
+  await sendTelegramMessageTo(chatId, summary, topButtons);
 }
 
 async function handleWhales(chatId: string): Promise<void> {
@@ -514,15 +514,13 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/inspect":
         await handleInspectWallet(chatId, args[0]);
         break;
+      case "/gems":
+      case "/gem":
       case "/100x":
       case "/early":
       case "/breakout":
-        await handle100xGems(chatId);
-        break;
       case "/solid":
-      case "/gems":
-      case "/gem":
-        await handleSolid(chatId);
+        await handleLiveGems(chatId);
         break;
       case "/positions":
       case "/trades":

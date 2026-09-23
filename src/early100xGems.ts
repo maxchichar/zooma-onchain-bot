@@ -185,8 +185,8 @@ export async function fireEarly100xAlert(gem: Early100xCandidate): Promise<void>
   await supabase.from("signal_evidence").insert([
     {
       signal_id: signal.id,
-      source: "early_100x_scanner",
-      reference: gem.tokenAddress,
+      signature: `audit_${gem.tokenAddress.slice(0, 16)}`,
+      wallet: gem.tokenAddress,
       note: `FDV $${Math.round(gem.fdv).toLocaleString()}, Liq $${Math.round(gem.liquidityUsd).toLocaleString()}, Age ${gem.ageHours}h, Upside ${gem.potentialMultiplier}`,
     },
   ]);

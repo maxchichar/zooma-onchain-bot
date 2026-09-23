@@ -44,6 +44,7 @@ import { supabase } from "./supabase.js";
 import { KNOWN_PROGRAM_IDS } from "./types.js";
 import { getTopHolderOwners } from "./solanaRpc.js";
 import { recordTopTraderEntry } from "./topTraders.js";
+import { fetchFreshTrendingSolanaPairs, fetchLatestBoostedSolanaTokens } from "./researchSources.js";
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const WEBHOOK_SECRET = process.env.HELIUS_WEBHOOK_SECRET;
@@ -108,18 +109,32 @@ export async function runDiscoveryOnce(): Promise<{ added: number; skippedAtCap:
   }
 
   const since = new Date(Date.now() - LOOKBACK_HOURS * 3600 * 1000).toISOString();
-  const { data: recentBuys, error } = await supabase
+  const { data: recentBuys } = await supabase
     .from("raw_events")
     .select("token_mint, wallet")
     .eq("side", "buy")
     .gte("block_time", since);
-  if (error) throw error;
 
   const tokensSeen = new Map<string, string>();
   for (const row of recentBuys ?? []) tokensSeen.set(row.token_mint, row.wallet);
 
+  // If no recent buys from tracked wallets, harvest from fresh trending Solana pairs & boosted tokens (< 48h)
   if (tokensSeen.size === 0) {
-    console.log("[discover] no recent buys from tracked wallets — nothing to expand from.");
+    const [freshPairs, boosted] = await Promise.all([
+      fetchFreshTrendingSolanaPairs().catch(() => []),
+      fetchLatestBoostedSolanaTokens().catch(() => []),
+    ]);
+
+    for (const p of freshPairs) {
+      if (p.baseToken?.address) tokensSeen.set(p.baseToken.address, "fresh_raydium_pool");
+    }
+    for (const b of boosted) {
+      if (b.tokenAddress) tokensSeen.set(b.tokenAddress, "trending_breakout");
+    }
+  }
+
+  if (tokensSeen.size === 0) {
+    console.log("[discover] no active tokens found to expand from.");
     return { added: 0, skippedAtCap: false };
   }
 
@@ -175,7 +190,7 @@ export async function runDiscoveryOnce(): Promise<{ added: number; skippedAtCap:
     }
   }
 
-  console.log(`[discover] run complete — ${added} new wallet(s) added (cap this run: ${runCap}).`);
+  console.log(`[discover] run complete: ${added} new wallet(s) added (cap this run: ${runCap}).`);
 
   if (added > 0) {
     await refreshWebhookWithCurrentWallets();
