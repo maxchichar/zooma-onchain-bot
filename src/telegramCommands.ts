@@ -1,23 +1,16 @@
 /**
  * TELEGRAM SLASH COMMANDS — /watch, /unwatch, /list, /status, /scores,
- * /help. Received via a Telegram webhook (see server.ts's
- * /webhooks/telegram endpoint), separate from the Helius webhook that
- * drives the actual signal detection.
- *
- * Every command here does exactly what the equivalent manual action
- * would do (insert/delete a row, run the same query a report script
- * runs) — nothing here bypasses the evidence/validation rules the rest
- * of the bot follows. /watch adds a wallet the same way a manual seed
- * would; it doesn't create a shortcut around anything.
+ * /scan, /trending, /discover, /help. Received via Telegram webhook.
  */
 import { supabase } from "./supabase.js";
 import { sendTelegramMessageTo } from "./telegram.js";
-import { refreshWebhookWithCurrentWallets } from "./discover.js";
+import { refreshWebhookWithCurrentWallets, runDiscoveryOnce } from "./discover.js";
 import { computeAllWalletScores } from "./walletScoring.js";
+import { fetchTokenPairs, fetchLatestBoostedSolanaTokens } from "./researchSources.js";
+import { checkMintAuthorities } from "./rugRisk.js";
+import { getTopHolderConcentration } from "./solanaRpc.js";
+import { getTokenTradingButtons } from "./tradeLinks.js";
 
-// Loose but real validation: base58, correct length range for a Solana
-// address. Not a guarantee the address is valid, just enough to catch
-// obvious typos before we insert garbage into tracked_wallets.
 const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 interface TelegramUpdate {
@@ -29,9 +22,15 @@ interface TelegramUpdate {
 
 const HELP_TEXT =
   `🤖 *Onchain Intelligence Bot — Commands*\n\n` +
-  `/watch <wallet address> — start tracking a wallet\n` +
-  `/unwatch <wallet address> — stop tracking a wallet\n` +
-  `/list — show how many wallets are tracked (and a few examples)\n` +
+  `*Wallet Tracking:*\n` +
+  `/watch <address> — start tracking a wallet (updates Helius in ms)\n` +
+  `/unwatch <address> — stop tracking a wallet\n` +
+  `/list — show tracked wallet count & sample\n` +
+  `/discover — trigger live wallet auto-discovery immediately\n\n` +
+  `*Token Scanning & Fast Trading:*\n` +
+  `/scan <token CA> — instant rug check, liquidity, & fast trade links\n` +
+  `/trending — live trending Solana meme coins with sniper buttons\n\n` +
+  `*Performance & Stats:*\n` +
   `/status — recent signals and open paper trades\n` +
   `/scores — top and bottom wallet credibility scores\n` +
   `/help — show this message`;
@@ -53,7 +52,7 @@ async function handleWatch(chatId: string, address: string | undefined): Promise
   }
 
   await refreshWebhookWithCurrentWallets();
-  await sendTelegramMessageTo(chatId, `✅ Now tracking \`${address}\`. Webhook updated — you'll get alerts on its future activity.`);
+  await sendTelegramMessageTo(chatId, `✅ Now tracking \`${address}\`. Helius webhook updated — you'll get real-time alerts on its future activity.`);
 }
 
 async function handleUnwatch(chatId: string, address: string | undefined): Promise<void> {
@@ -73,7 +72,7 @@ async function handleUnwatch(chatId: string, address: string | undefined): Promi
   }
 
   await refreshWebhookWithCurrentWallets();
-  await sendTelegramMessageTo(chatId, `✅ Stopped tracking \`${address}\`. Webhook updated.`);
+  await sendTelegramMessageTo(chatId, `✅ Stopped tracking \`${address}\`. Helius webhook updated.`);
 }
 
 async function handleList(chatId: string): Promise<void> {
@@ -130,6 +129,95 @@ async function handleScores(chatId: string): Promise<void> {
   );
 }
 
+async function handleScan(chatId: string, address: string | undefined): Promise<void> {
+  if (!address || !SOLANA_ADDRESS_RE.test(address)) {
+    await sendTelegramMessageTo(chatId, "Usage: `/scan <token mint address>`");
+    return;
+  }
+
+  await sendTelegramMessageTo(chatId, `🔍 Scanning \`${address}\` in real-time...`);
+
+  const [pairs, authorities, topHolder] = await Promise.all([
+    fetchTokenPairs(address).catch(() => []),
+    checkMintAuthorities(address).catch(() => null),
+    getTopHolderConcentration(address).catch(() => null),
+  ]);
+
+  if (pairs.length === 0) {
+    await sendTelegramMessageTo(
+      chatId,
+      `⚠️ No liquidity pairs found for \`${address}\`. It may be brand new or unlisted.`,
+      getTokenTradingButtons(address)
+    );
+    return;
+  }
+
+  const pair = pairs.reduce((best, p) => ((p.liquidity?.usd ?? 0) > (best.liquidity?.usd ?? 0) ? p : best), pairs[0]);
+  const liq = pair.liquidity?.usd ? `$${Math.round(pair.liquidity.usd).toLocaleString()}` : "Unknown";
+  const vol24h = pair.volume?.h24 ? `$${Math.round(pair.volume.h24).toLocaleString()}` : "Unknown";
+  const price = pair.priceUsd ? `$${pair.priceUsd}` : "Unknown";
+  const fdv = pair.fdv ? `$${Math.round(pair.fdv).toLocaleString()}` : "Unknown";
+
+  let securityText = "";
+  if (authorities) {
+    const mintIcon = authorities.mintAuthorityRenounced ? "✅" : "⚠️";
+    const mintText = authorities.mintAuthorityRenounced ? "Renounced" : "*NOT RENOUNCED (can mint)*";
+    const freezeIcon = authorities.freezeAuthorityRenounced ? "✅" : "⚠️";
+    const freezeText = authorities.freezeAuthorityRenounced ? "Renounced" : "*NOT RENOUNCED (can freeze)*";
+    securityText += `\nMint Authority: ${mintIcon} ${mintText}\nFreeze Authority: ${freezeIcon} ${freezeText}`;
+  }
+  if (topHolder !== null) {
+    securityText += `\nTop 1 Holder: ${topHolder > 20 ? "⚠️" : "✅"} ~${topHolder.toFixed(1)}% of top-20 sample`;
+  }
+
+  const text =
+    `🔬 *Token Security & Market Scan*\n\n` +
+    `*${pair.baseToken.name} ($${pair.baseToken.symbol})*\n` +
+    `CA: \`${address}\`\n\n` +
+    `💰 Price: *${price}* | FDV: *${fdv}*\n` +
+    `💧 Liquidity: *${liq}* | 24h Vol: *${vol24h}*\n` +
+    `DEX: *${pair.dexId}*` +
+    `${securityText}\n\n` +
+    `⚡ *Trade instantly using the terminals below:*`;
+
+  await sendTelegramMessageTo(chatId, text, getTokenTradingButtons(address));
+}
+
+async function handleTrending(chatId: string): Promise<void> {
+  await sendTelegramMessageTo(chatId, "🔥 Fetching live trending Solana tokens...");
+  const boosted = await fetchLatestBoostedSolanaTokens().catch(() => []);
+  if (boosted.length === 0) {
+    await sendTelegramMessageTo(chatId, "No trending tokens returned right now — try again in a minute.");
+    return;
+  }
+
+  const top5 = boosted.slice(0, 5);
+  let text = `🔥 *Top Trending Solana Tokens (DexScreener Live)*\n\n`;
+  for (let i = 0; i < top5.length; i++) {
+    const t = top5[i];
+    text += `${i + 1}. \`${t.tokenAddress}\`\n`;
+  }
+  text += `\n_Use /scan <address> for full security audit or tap any quick-trade button._`;
+
+  const buttons = top5.slice(0, 3).map((t) => [
+    { text: `⚡ Photon (${t.tokenAddress.slice(0, 4)}...)`, url: `https://photon-sol.tinyastro.io/en/lp/${t.tokenAddress}` },
+    { text: `🐂 BullX`, url: `https://neo.bullx.io/terminal?chainId=1399811149&address=${t.tokenAddress}` },
+    { text: `📊 DexS`, url: `https://dexscreener.com/solana/${t.tokenAddress}` },
+  ]);
+
+  await sendTelegramMessageTo(chatId, text, buttons);
+}
+
+async function handleDiscover(chatId: string): Promise<void> {
+  await sendTelegramMessageTo(chatId, "🔄 Running wallet auto-discovery pass now...");
+  try {
+    const res = await runDiscoveryOnce();
+    await sendTelegramMessageTo(chatId, `✅ Discovery complete! Added *${res.added}* new smart-money wallet(s) to Helius webhook.`);
+  } catch (err) {
+    await sendTelegramMessageTo(chatId, `Discovery run encountered an issue: ${(err as Error).message}`);
+  }
+}
+
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
   const message = update.message;
   if (!message?.text) return;
@@ -142,7 +230,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/start":
         await sendTelegramMessageTo(
           chatId,
-          `👋 Onchain intelligence bot online. Everything it sends is \`[UNVALIDATED]\` until paper trading proves otherwise — see /help for what you can do.`
+          `👋 Onchain intelligence bot online.\nReal-time Helius tracking active. See /help for instant commands.`
         );
         break;
       case "/help":
@@ -163,9 +251,17 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/scores":
         await handleScores(chatId);
         break;
+      case "/scan":
+      case "/check":
+        await handleScan(chatId, args[0]);
+        break;
+      case "/trending":
+        await handleTrending(chatId);
+        break;
+      case "/discover":
+        await handleDiscover(chatId);
+        break;
       default:
-        // Not a recognized command — say nothing rather than noise the
-        // chat on every non-command message people send.
         break;
     }
   } catch (err) {
@@ -173,3 +269,4 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     await sendTelegramMessageTo(chatId, "Something went wrong handling that command — check the server logs.");
   }
 }
+

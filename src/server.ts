@@ -103,7 +103,12 @@ app.post("/webhooks/telegram", async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`[server] listening on port ${PORT}`);
-  loadTrackedWallets().then((w) => console.log(`[server] tracking ${w.size} wallet(s)`));
+  loadTrackedWallets().then((w) => {
+    console.log(`[server] tracking ${w.size} wallet(s) in real-time`);
+    // Kick off an initial discovery and research pass immediately on boot (non-blocking)
+    runDiscoveryOnce().catch((err) => console.error("[server] initial discovery error:", err));
+    runResearchOnce().catch((err) => console.error("[server] initial research error:", err));
+  });
 });
 
 // ---------- In-process discovery scheduler ----------

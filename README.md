@@ -155,16 +155,18 @@ sentences describing them. Its system prompt forbids inventing anything
 not in that JSON and forbids any trading recommendation. If you want to
 audit exactly what it can and can't do, that whole prompt is in the file.
 
-**Both are optional.** Leave `TYPESAFE_API_KEY` / `ANTHROPIC_API_KEY` unset
+**Both are optional.** Leave `TYPESAFE_API_KEY` / `GROQ_API_KEY` unset
 in `.env` and the bot runs exactly as before — rule fires, plain templated
 message, no classification line. Same if either API call fails at
 runtime (rate limit, outage, bad key) — it logs the error and falls back
 rather than dropping the notification.
 
-**On the LLM provider:** the code defaults to Anthropic's Messages API
-(`ANTHROPIC_MODEL=claude-sonnet-5`). If your LLM key is for a different
-provider, swap the `fetch` call in `src/llm.ts` — the rest of the pipeline
-just expects a string back.
+**On the LLM provider:** the code uses Groq's API (`GROQ_MODEL=llama-3.3-70b-versatile`
+by default — check console.groq.com/docs/models for the current catalog,
+Groq's lineup changes more than most). It's OpenAI-compatible, so if you
+want a different OpenAI-compatible provider later, only the `fetch` call
+in `src/llm.ts` needs to change — the rest of the pipeline just expects a
+string back.
 
 ## Scaling coverage ("maximize" mode)
 

@@ -4,6 +4,7 @@ import { HeliusEnhancedTx, ParsedLeg, WRAPPED_SOL_MINT } from "./types.js";
 import { classifyAccumulationPattern, AccumulationClassification } from "./jev.js";
 import { explainSignal } from "./llm.js";
 import { openPaperTrade } from "./paperTrading.js";
+import { getTokenTradingButtons } from "./tradeLinks.js";
 
 const ACCUMULATION_THRESHOLD = Number(process.env.ACCUMULATION_THRESHOLD ?? 3);
 const ACCUMULATION_WINDOW_MINUTES = Number(process.env.ACCUMULATION_WINDOW_MINUTES ?? 120);
@@ -144,12 +145,7 @@ async function fireSignal(
     `Evidence: ${evidenceSignatures.length} on-chain transaction(s) — see signal_evidence table for signatures\n\n` +
     `_Rule-triggered signal. Not backtested. Not financial advice._`;
 
-  await sendTelegramMessage(message, [
-    [
-      { text: "🔍 Explorer", url: `https://solscan.io/token/${tokenMint}` },
-      { text: "📊 DexScreener", url: `https://dexscreener.com/solana/${tokenMint}` },
-    ],
-  ]);
+  await sendTelegramMessage(message, getTokenTradingButtons(tokenMint));
 
   // Every fired signal opens a simulated position automatically — this
   // is what lets us eventually answer "would this have made money"

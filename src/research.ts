@@ -26,6 +26,7 @@ import { explainResearchCandidate } from "./llm.js";
 import { getTopHolderConcentration } from "./solanaRpc.js";
 import { checkMintAuthorities, checkDeployerHistory } from "./rugRisk.js";
 import { openPaperTrade } from "./paperTrading.js";
+import { getTokenTradingButtons } from "./tradeLinks.js";
 import {
   fetchLatestBoostedSolanaTokens,
   fetchLatestSolanaTokenProfiles,
@@ -112,15 +113,10 @@ async function fireResearchSignal(params: {
     `Evidence:\n${evidenceLines}\n\n` +
     `_High-risk category (meme coin / NFT). Not backtested. Not financial advice._`;
 
-  const buttons: { text: string; url: string }[][] =
+  const buttons =
     params.category === "nft_watch"
       ? [[{ text: "🌊 Magic Eden", url: `https://magiceden.io/marketplace/${params.tokenOrSymbol}` }]]
-      : [
-          [
-            { text: "🔍 Explorer", url: `https://solscan.io/token/${params.tokenOrSymbol}` },
-            { text: "📊 DexScreener", url: `https://dexscreener.com/solana/${params.tokenOrSymbol}` },
-          ],
-        ];
+      : getTokenTradingButtons(params.tokenOrSymbol);
 
   await sendTelegramMessage(message, buttons);
 

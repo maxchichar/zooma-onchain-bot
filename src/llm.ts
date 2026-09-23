@@ -9,13 +9,53 @@
  * and is instructed to describe ONLY those facts. There is nothing in its
  * input for it to embellish into a false claim about wallet behavior.
  *
- * Defaults to the Anthropic Messages API. If you're using a different
- * provider, swap the fetch call below — the rest of the pipeline doesn't
- * care which LLM answers as long as this function returns a string.
+ * Uses Groq's API (OpenAI-compatible chat completions format, fast +
+ * cheap — a good fit for a short, low-stakes explanation task like this).
+ * If you switch providers again later, only the fetch call in
+ * callGroq() below needs to change — the rest of the pipeline just
+ * expects a string back.
  */
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5";
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+// Check console.groq.com/docs/models for the current catalog — Groq
+// adds/retires models more often than most providers. This default is a
+// solid general-purpose choice as of when this was written, not a
+// guarantee it'll still be current.
+const GROQ_MODEL = process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+
+async function callGroq(systemPrompt: string, userContent: string): Promise<string | null> {
+  if (!GROQ_API_KEY) return null;
+
+  try {
+    const res = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        max_tokens: 300,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userContent },
+        ],
+      }),
+    });
+
+    if (!res.ok) {
+      console.error(`[llm] Groq API error ${res.status}: ${await res.text()}`);
+      return null;
+    }
+
+    const json = await res.json();
+    return json?.choices?.[0]?.message?.content ?? null;
+  } catch (err) {
+    console.error("[llm] Groq call failed:", (err as Error).message);
+    return null;
+  }
+}
 
 export interface SignalExplanationContext {
   tokenMint: string;
@@ -52,94 +92,20 @@ Rules you must follow exactly:
 - 2-4 sentences. Plain text, no markdown, no headers, no bullet points.`;
 
 /**
- * Same contract as explainSignal: returns null on failure/missing key,
- * never throws, never given anything it could invent details from.
- */
-export async function explainResearchCandidate(context: ResearchExplanationContext): Promise<string | null> {
-  if (!ANTHROPIC_API_KEY) return null;
-
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 300,
-        system: RESEARCH_SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: `Describe this using only the facts below. Do not add anything not present here:\n\n${JSON.stringify(
-              context,
-              null,
-              2
-            )}`,
-          },
-        ],
-      }),
-    });
-
-    if (!res.ok) {
-      console.error(`[llm] research API error ${res.status}: ${await res.text()}`);
-      return null;
-    }
-
-    const json = await res.json();
-    const textBlock = (json?.content ?? []).find((c: { type: string }) => c.type === "text");
-    return textBlock?.text ?? null;
-  } catch (err) {
-    console.error("[llm] research explanation failed:", (err as Error).message);
-    return null;
-  }
-}
-
-/**
  * Returns null (never throws) if the LLM isn't configured or the call
  * fails — the caller falls back to a plain templated message. A missing
  * explanation should never block a notification from being sent.
  */
 export async function explainSignal(context: SignalExplanationContext): Promise<string | null> {
-  if (!ANTHROPIC_API_KEY) return null;
+  const userContent = `Describe this detected pattern using only the facts below. Do not add anything not present here:\n\n${JSON.stringify(context, null, 2)}`;
+  return callGroq(SYSTEM_PROMPT, userContent);
+}
 
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 300,
-        system: SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: `Describe this detected pattern using only the facts below. Do not add anything not present here:\n\n${JSON.stringify(
-              context,
-              null,
-              2
-            )}`,
-          },
-        ],
-      }),
-    });
-
-    if (!res.ok) {
-      console.error(`[llm] API error ${res.status}: ${await res.text()}`);
-      return null;
-    }
-
-    const json = await res.json();
-    const textBlock = (json?.content ?? []).find((c: { type: string }) => c.type === "text");
-    return textBlock?.text ?? null;
-  } catch (err) {
-    console.error("[llm] explanation failed:", (err as Error).message);
-    return null;
-  }
+/**
+ * Same contract as explainSignal: returns null on failure/missing key,
+ * never throws, never given anything it could invent details from.
+ */
+export async function explainResearchCandidate(context: ResearchExplanationContext): Promise<string | null> {
+  const userContent = `Describe this using only the facts below. Do not add anything not present here:\n\n${JSON.stringify(context, null, 2)}`;
+  return callGroq(RESEARCH_SYSTEM_PROMPT, userContent);
 }

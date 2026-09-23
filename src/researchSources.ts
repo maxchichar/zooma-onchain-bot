@@ -47,6 +47,8 @@ export interface DexScreenerPair {
   baseToken: { address: string; name: string; symbol: string };
   priceUsd?: string;
   liquidity?: { usd?: number };
+  fdv?: number;
+  marketCap?: number;
   volume?: { h24?: number };
   txns?: { h24?: { buys: number; sells: number } };
   pairCreatedAt?: number; // unix ms

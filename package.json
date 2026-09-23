@@ -5,14 +5,14 @@
   "type": "module",
   "description": "Always-on Helius-webhook-driven wallet pattern detector that drops [UNVALIDATED] signals to Telegram. Runs unattended.",
   "scripts": {
-    "start": "tsx src/server.ts",
-    "dev": "tsx watch src/server.ts",
-    "register-webhook": "tsx src/registerWebhook.ts",
-    "register-telegram-webhook": "tsx src/registerTelegramWebhook.ts",
-    "discover": "tsx src/discover.ts",
-    "report": "tsx src/report.ts",
-    "wallet-scores": "tsx src/walletScoresReport.ts",
-    "research-scores": "tsx src/researchScoresReport.ts"
+    "start": "tsx --env-file-if-exists=.env src/server.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
+    "register-webhook": "tsx --env-file-if-exists=.env src/registerWebhook.ts",
+    "register-telegram-webhook": "tsx --env-file-if-exists=.env src/registerTelegramWebhook.ts",
+    "discover": "tsx --env-file-if-exists=.env src/discover.ts",
+    "report": "tsx --env-file-if-exists=.env src/report.ts",
+    "wallet-scores": "tsx --env-file-if-exists=.env src/walletScoresReport.ts",
+    "research-scores": "tsx --env-file-if-exists=.env src/researchScoresReport.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
