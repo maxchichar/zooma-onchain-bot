@@ -14,6 +14,7 @@ import { openTrendingPaperTrade, getOpenPositionsReport, computeStats, formatSta
 import { getRecentTraderEntries, formatTraderEntriesText } from "./topTraders.js";
 import { scanSolidGems, fireSolidGemAlert } from "./solidGems.js";
 import { scanEarly100xGems } from "./early100xGems.js";
+import { fetchTopTrendingSolanaTokens, TrendingTokenDetail } from "./trendingAlerter.js";
 import {
   getWalletIdenticonUrl,
   inspectWalletDetail,
@@ -265,29 +266,55 @@ async function handleScan(chatId: string, address: string | undefined): Promise<
 }
 
 async function handleTrending(chatId: string): Promise<void> {
-  await sendTelegramMessageTo(chatId, "🔥 Fetching live trending Solana tokens...");
-  const boosted = await fetchLatestBoostedSolanaTokens().catch(() => []);
-  if (boosted.length === 0) {
+  await sendTelegramMessageTo(chatId, "🔥 Fetching top 15 live trending Solana tokens with images & market data...");
+  const trendingList = await fetchTopTrendingSolanaTokens(15).catch(() => []);
+
+  if (trendingList.length === 0) {
     await sendTelegramMessageTo(chatId, "No trending tokens returned right now. Please check again in a minute.");
     return;
   }
 
-  const top5 = boosted.slice(0, 5);
-  let text = `🔥 *Top Trending Solana Tokens (DexScreener Live)*\n\n`;
-  for (let i = 0; i < top5.length; i++) {
-    const t = top5[i];
-    text += `${i + 1}. \`${t.tokenAddress}\`\n`;
+  // Send photo cards for top 3 breakout tokens
+  const topCards = trendingList.slice(0, 3);
+  for (let i = 0; i < topCards.length; i++) {
+    const t = topCards[i];
     openTrendingPaperTrade(t.tokenAddress).catch(() => {});
-  }
-  text += `\n_Live simulated paper trade positions opened._\n_Use /scan <CA> for full security audit or tap any quick-trade button._`;
 
-  const buttons = top5.slice(0, 3).map((t) => [
-    { text: `⚡ Photon (${t.tokenAddress.slice(0, 4)}...)`, url: `https://photon-sol.tinyastro.io/en/lp/${t.tokenAddress}` },
+    const priceStr = Number(t.priceUsd) < 0.01 ? `$${Number(t.priceUsd).toFixed(6)}` : `$${Number(t.priceUsd).toFixed(4)}`;
+    const caption =
+      `🔥 *#${i + 1} Trending Token | ${t.name} ($${t.symbol})*\n\n` +
+      `• CA: \`${t.tokenAddress}\`\n` +
+      `• Price: *${priceStr}* | FDV: *$${Math.round(t.fdv).toLocaleString()}*\n` +
+      `• 24h Volume: *$${Math.round(t.volume24hUsd).toLocaleString()}*\n` +
+      `• Liquidity: *$${Math.round(t.liquidityUsd).toLocaleString()}* | Age: *${t.ageHours}h*\n` +
+      `• DEX: *${t.dexId}*\n\n` +
+      `⚡ *Snipe & Fast Trade Buttons:*`;
+
+    await sendTelegramPhotoTo(chatId, t.imageUrl, caption, getTokenTradingButtons(t.tokenAddress));
+  }
+
+  // Format full 15-token trending board
+  let text = `🔥 *Top 15 Live Trending Solana Tokens (DexScreener & Raydium)*\n\n`;
+  for (let i = 0; i < trendingList.length; i++) {
+    const t = trendingList[i];
+    openTrendingPaperTrade(t.tokenAddress).catch(() => {});
+    const priceStr = Number(t.priceUsd) < 0.01 ? `$${Number(t.priceUsd).toFixed(6)}` : `$${Number(t.priceUsd).toFixed(4)}`;
+    const volStr = `$${Math.round(t.volume24hUsd).toLocaleString()}`;
+
+    text += `${i + 1}. *${t.name} ($${t.symbol})*\n`;
+    text += `   • CA: \`${t.tokenAddress}\`\n`;
+    text += `   • Price: *${priceStr}* | Vol: *${volStr}* | Age: *${t.ageHours}h*\n\n`;
+  }
+
+  text += `_Simulated $2 paper trades automatically opened._\n_Use \`/scan <CA>\` for full security audit or tap any quick-trade button._`;
+
+  const top3Buttons = trendingList.slice(0, 3).map((t) => [
+    { text: `⚡ Photon (${t.symbol})`, url: `https://photon-sol.tinyastro.io/en/lp/${t.tokenAddress}` },
     { text: `🐂 BullX`, url: `https://neo.bullx.io/terminal?chainId=1399811149&address=${t.tokenAddress}` },
-    { text: `📊 DexS`, url: `https://dexscreener.com/solana/${t.tokenAddress}` },
+    { text: `📊 GMGN`, url: `https://gmgn.ai/sol/token/${t.tokenAddress}` },
   ]);
 
-  await sendTelegramMessageTo(chatId, text, buttons);
+  await sendTelegramMessageTo(chatId, text, top3Buttons);
 }
 
 async function handle100xGems(chatId: string): Promise<void> {

@@ -5,6 +5,7 @@ import { runDiscoveryOnce } from "./discover.js";
 import { runResearchOnce } from "./research.js";
 import { runSolidGemScanOnce } from "./solidGems.js";
 import { runEarly100xScanOnce } from "./early100xGems.js";
+import { runTrendingAutoAlertOnce } from "./trendingAlerter.js";
 import { checkOpenTrades, sendPerformanceDigest } from "./paperTrading.js";
 import { sendWalletScoreDigest } from "./walletScoring.js";
 import { sendResearchScoreDigest } from "./researchScoring.js";
@@ -108,11 +109,12 @@ app.listen(PORT, () => {
   console.log(`[server] listening on port ${PORT}`);
   loadTrackedWallets().then((w) => {
     console.log(`[server] tracking ${w.size} wallet(s) in real-time`);
-    // Kick off initial discovery, research, solid gem, and early 100x passes immediately on boot (non-blocking)
+    // Kick off initial discovery, research, solid gem, early 100x, and trending alert passes immediately on boot (non-blocking)
     runDiscoveryOnce().catch((err) => console.error("[server] initial discovery error:", err));
     runResearchOnce().catch((err) => console.error("[server] initial research error:", err));
     runSolidGemScanOnce().catch((err) => console.error("[server] initial solid gem scan error:", err));
     runEarly100xScanOnce().catch((err) => console.error("[server] initial early 100x scan error:", err));
+    runTrendingAutoAlertOnce().catch((err) => console.error("[server] initial trending alert scan error:", err));
   });
 });
 
@@ -182,6 +184,26 @@ setInterval(async () => {
     solidGemInFlight = false;
   }
 }, SOLID_GEM_INTERVAL_MINUTES * 60 * 1000);
+
+// ---------- In-process trending breakout scanner scheduler ----------
+// Scans for fresh trending Solana breakout tokens with high volume and auto-alerts Telegram
+const TRENDING_ALERT_INTERVAL_MINUTES = Number(process.env.TRENDING_ALERT_INTERVAL_MINUTES ?? 5);
+let trendingAlertInFlight = false;
+
+setInterval(async () => {
+  if (trendingAlertInFlight) return;
+  trendingAlertInFlight = true;
+  try {
+    const alerted = await runTrendingAutoAlertOnce();
+    if (alerted > 0) {
+      console.log(`[server] trending breakout scan alerted ${alerted} token(s)`);
+    }
+  } catch (err) {
+    console.error("[server] scheduled trending breakout scan failed:", err);
+  } finally {
+    trendingAlertInFlight = false;
+  }
+}, TRENDING_ALERT_INTERVAL_MINUTES * 60 * 1000);
 
 // ---------- In-process research scheduler (meme coins, NFTs) ----------
 // Separate from wallet-pattern discovery above — different data sources
