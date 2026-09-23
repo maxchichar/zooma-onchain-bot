@@ -42,7 +42,7 @@ const MAX_HOLD_HOURS = Number(process.env.PAPER_MAX_HOLD_HOURS ?? 48);
 const FEE_PCT = Number(process.env.PAPER_FEE_PCT ?? 1); // per side (entry AND exit each pay this)
 const SLIPPAGE_PCT = Number(process.env.PAPER_SLIPPAGE_PCT ?? 2); // per side
 
-export type Category = "wallet_pattern" | "meme_coin_watch" | "nft_watch";
+export type Category = "wallet_pattern" | "meme_coin_watch" | "nft_watch" | "trending_trade";
 
 interface CurrentPrice {
   price: number;
@@ -66,12 +66,9 @@ async function getCurrentPrice(tokenOrSymbol: string, category: Category): Promi
 }
 
 /**
- * Opens a simulated trade for a signal that just fired. Best-effort and
- * non-blocking by design — called from fireSignal()/fireResearchSignal()
- * right after a signal is created, and a failure here must never affect
- * whether the signal itself was recorded or notified.
+ * Opens a simulated trade for a signal or trending token. Best-effort and non-blocking.
  */
-export async function openPaperTrade(signalId: string, tokenOrSymbol: string, category: Category): Promise<void> {
+export async function openPaperTrade(signalId: string | null, tokenOrSymbol: string, category: Category): Promise<void> {
   const current = await getCurrentPrice(tokenOrSymbol, category);
   if (!current) {
     console.warn(`[paperTrading] no price available for ${tokenOrSymbol} (${category}) — skipping paper trade.`);
@@ -83,7 +80,7 @@ export async function openPaperTrade(signalId: string, tokenOrSymbol: string, ca
   const maxHoldUntil = new Date(Date.now() + MAX_HOLD_HOURS * 3600 * 1000).toISOString();
 
   const { error } = await supabase.from("paper_trades").insert({
-    signal_id: signalId,
+    signal_id: signalId ?? null,
     token_mint: tokenOrSymbol,
     category,
     quote_currency: current.quoteCurrency,
@@ -99,13 +96,39 @@ export async function openPaperTrade(signalId: string, tokenOrSymbol: string, ca
     return;
   }
 
+  const tag = category === "trending_trade" ? "TRENDING TRADE" : "PAPER TRADE";
   await sendTelegramMessage(
-    `*[PAPER TRADE OPENED]*\n` +
+    `*[${tag} OPENED]*\n` +
       `${category === "nft_watch" ? "Collection" : "Token"}: \`${tokenOrSymbol}\`\n` +
-      `Entry: ${current.price} ${current.quoteCurrency.toUpperCase()}\n` +
+      `Category: \`${category}\`\n` +
+      `Entry: $${current.price < 0.01 ? current.price.toFixed(6) : current.price.toFixed(4)} ${current.quoteCurrency.toUpperCase()}\n` +
       `Stop: ${stopLossPrice.toFixed(6)} | Target: ${targetPrice.toFixed(6)} | Max hold: ${MAX_HOLD_HOURS}h\n\n` +
-      `_Simulated only — no real funds involved._`
+      `_Simulated only — tracking live performance net of fees & slippage._`
   );
+}
+
+/**
+ * Automatically opens a simulated paper trade for a live trending token (if not already opened recently).
+ */
+export async function openTrendingPaperTrade(tokenMint: string): Promise<boolean> {
+  try {
+    const cutoff = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+    const { data } = await supabase
+      .from("paper_trades")
+      .select("id")
+      .eq("token_mint", tokenMint)
+      .eq("category", "trending_trade")
+      .gte("entry_time", cutoff)
+      .limit(1);
+
+    if ((data?.length ?? 0) > 0) return false;
+
+    await openPaperTrade(null, tokenMint, "trending_trade");
+    return true;
+  } catch (err) {
+    console.warn(`[paperTrading] openTrendingPaperTrade failed for ${tokenMint}:`, (err as Error).message);
+    return false;
+  }
 }
 
 interface OpenTrade {

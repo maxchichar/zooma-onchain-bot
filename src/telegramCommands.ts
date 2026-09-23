@@ -10,6 +10,8 @@ import { fetchTokenPairs, fetchLatestBoostedSolanaTokens, getTokenImageUrl } fro
 import { checkMintAuthorities } from "./rugRisk.js";
 import { getTopHolderConcentration } from "./solanaRpc.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
+import { openTrendingPaperTrade } from "./paperTrading.js";
+import { getRecentTraderEntries, formatTraderEntriesText } from "./topTraders.js";
 
 const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -22,14 +24,15 @@ interface TelegramUpdate {
 
 const HELP_TEXT =
   `🤖 *Onchain Intelligence Bot — Commands*\n\n` +
-  `*Wallet Tracking:*\n` +
+  `*Wallet Tracking & Top Traders:*\n` +
   `/watch <address> — start tracking a wallet (updates Helius in ms)\n` +
   `/unwatch <address> — stop tracking a wallet\n` +
   `/list — show tracked wallet count & sample\n` +
+  `/traders — recent top trader & smart money entries with price\n` +
   `/discover — trigger live wallet auto-discovery immediately\n\n` +
   `*Token Scanning & Fast Trading:*\n` +
-  `/scan <token CA> — instant rug check, liquidity, & fast trade links\n` +
-  `/trending — live trending Solana meme coins with sniper buttons\n\n` +
+  `/scan <token CA> — instant rug check, photo, liquidity, & fast trade links\n` +
+  `/trending — live trending Solana tokens with sniper buttons & paper trade\n\n` +
   `*Performance & Stats:*\n` +
   `/status — recent signals and open paper trades\n` +
   `/scores — top and bottom wallet credibility scores\n` +
@@ -197,8 +200,10 @@ async function handleTrending(chatId: string): Promise<void> {
   for (let i = 0; i < top5.length; i++) {
     const t = top5[i];
     text += `${i + 1}. \`${t.tokenAddress}\`\n`;
+    // Auto-open live trending paper trade in background for top tokens
+    openTrendingPaperTrade(t.tokenAddress).catch(() => {});
   }
-  text += `\n_Use /scan <address> for full security audit or tap any quick-trade button._`;
+  text += `\n_Live paper trading positions opened for top trending tokens._\n_Use /scan <address> for full security audit or tap any quick-trade button._`;
 
   const buttons = top5.slice(0, 3).map((t) => [
     { text: `⚡ Photon (${t.tokenAddress.slice(0, 4)}...)`, url: `https://photon-sol.tinyastro.io/en/lp/${t.tokenAddress}` },
@@ -207,6 +212,12 @@ async function handleTrending(chatId: string): Promise<void> {
   ]);
 
   await sendTelegramMessageTo(chatId, text, buttons);
+}
+
+async function handleTraders(chatId: string): Promise<void> {
+  const entries = await getRecentTraderEntries(10);
+  const text = formatTraderEntriesText(entries);
+  await sendTelegramMessageTo(chatId, text);
 }
 
 async function handleDiscover(chatId: string): Promise<void> {
@@ -245,6 +256,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
         break;
       case "/list":
         await handleList(chatId);
+        break;
+      case "/traders":
+      case "/entries":
+      case "/toptraders":
+        await handleTraders(chatId);
         break;
       case "/status":
         await handleStatus(chatId);

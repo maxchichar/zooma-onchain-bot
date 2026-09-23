@@ -43,6 +43,7 @@
 import { supabase } from "./supabase.js";
 import { KNOWN_PROGRAM_IDS } from "./types.js";
 import { getTopHolderOwners } from "./solanaRpc.js";
+import { recordTopTraderEntry } from "./topTraders.js";
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const WEBHOOK_SECRET = process.env.HELIUS_WEBHOOK_SECRET;
@@ -163,6 +164,13 @@ export async function runDiscoveryOnce(): Promise<{ added: number; skippedAtCap:
         alreadyTracked.add(owner);
         added++;
         console.log(`[discover] added ${owner} (from token ${mint}, via wallet ${fromWallet})`);
+        await recordTopTraderEntry({
+          walletAddress: owner,
+          tokenMint: mint,
+          traderCategory: "top_holder",
+          source: "discovery",
+          notes: `Discovered from top holder of token ${mint} bought by wallet ${fromWallet}`,
+        });
       }
     }
   }

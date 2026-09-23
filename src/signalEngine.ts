@@ -6,6 +6,7 @@ import { explainSignal } from "./llm.js";
 import { openPaperTrade } from "./paperTrading.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { fetchTokenPairs, getTokenImageUrl } from "./researchSources.js";
+import { recordTopTraderEntry } from "./topTraders.js";
 
 const ACCUMULATION_THRESHOLD = Number(process.env.ACCUMULATION_THRESHOLD ?? 3);
 const ACCUMULATION_WINDOW_MINUTES = Number(process.env.ACCUMULATION_WINDOW_MINUTES ?? 120);
@@ -236,7 +237,19 @@ export async function processTransaction(tx: HeliusEnhancedTx, trackedWallets: S
 
   for (const leg of legs) {
     await saveEvent(leg);
-    if (leg.side === "buy") affectedMints.add(leg.mint);
+    if (leg.side === "buy") {
+      affectedMints.add(leg.mint);
+      await recordTopTraderEntry({
+        walletAddress: leg.wallet,
+        tokenMint: leg.mint,
+        solAmount: leg.solAmount,
+        tokenAmount: leg.tokenAmount,
+        txSignature: leg.signature,
+        entryTime: new Date(leg.timestamp * 1000).toISOString(),
+        traderCategory: "smart_money",
+        source: "onchain_tx",
+      });
+    }
   }
 
   for (const mint of affectedMints) {
