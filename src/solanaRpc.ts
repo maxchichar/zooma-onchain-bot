@@ -58,3 +58,17 @@ export async function getTopHolderOwners(mint: string, minFraction: number): Pro
 
   return [...new Set(owners)];
 }
+
+/** Fetches real-time SOL balance for any wallet address. */
+export async function getWalletSolBalance(wallet: string): Promise<number | null> {
+  try {
+    const result = await rpcCall<{ value: number }>("getBalance", [wallet]);
+    if (typeof result?.value === "number") {
+      return result.value / 1e9; // lamports to SOL
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+

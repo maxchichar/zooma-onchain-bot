@@ -1,5 +1,5 @@
 /**
- * TELEGRAM SLASH COMMANDS: /watch, /unwatch, /list, /wallets, /status, /scores,
+ * TELEGRAM SLASH COMMANDS: /watch, /unwatch, /list, /wallets, /wallet, /status, /scores,
  * /scan, /trending, /traders, /discover, /help.
  */
 import { supabase } from "./supabase.js";
@@ -12,8 +12,15 @@ import { getTopHolderConcentration } from "./solanaRpc.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { openTrendingPaperTrade } from "./paperTrading.js";
 import { getRecentTraderEntries, formatTraderEntriesText } from "./topTraders.js";
+import {
+  getWalletIdenticonUrl,
+  inspectWalletDetail,
+  formatWalletDetailText,
+  getWalletProfileButtons,
+} from "./walletInspector.js";
 
 const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const MAX_CAPACITY = Number(process.env.MAX_TRACKED_WALLETS ?? 5000);
 
 interface TelegramUpdate {
   message?: {
@@ -24,12 +31,13 @@ interface TelegramUpdate {
 
 const HELP_TEXT =
   `🤖 *Onchain Intelligence Bot | Command Center*\n\n` +
-  `*Tracked Wallets & Smart Money:*\n` +
-  `• \`/list\` or \`/wallets\` : View all currently tracked wallets\n` +
+  `*Tracked Wallets & Smart Money (Up to 5,000):*\n` +
+  `• \`/list\` or \`/wallets\` : View all tracked wallets & system capacity\n` +
+  `• \`/wallet <address>\` : Deep dossier on any wallet with visual avatar & PnL\n` +
   `• \`/watch <address>\` : Add a wallet to real-time tracking\n` +
   `• \`/unwatch <address>\` : Remove a wallet from tracking\n` +
   `• \`/traders\` : View recent entries of smart money traders\n` +
-  `• \`/discover\` : Trigger an instant wallet discovery pass\n\n` +
+  `• \`/discover\` : Trigger an instant wallet auto-discovery pass\n\n` +
   `*Security & Fast Trading:*\n` +
   `• \`/scan <token CA>\` : Complete rug check, photo, liquidity & fast trade links\n` +
   `• \`/trending\` : Live trending Solana meme coins with sniper buttons\n\n` +
@@ -89,15 +97,45 @@ async function handleList(chatId: string): Promise<void> {
     return;
   }
 
-  let text = `📋 *Tracked Wallets (${wallets.length} Active in Real-Time)*\n\n`;
-  for (let i = 0; i < wallets.length; i++) {
-    const w = wallets[i];
+  const total = wallets.length;
+  const pct = ((total / MAX_CAPACITY) * 100).toFixed(1);
+  const seedCount = wallets.filter((w) => w.source === "seed").length;
+  const autoCount = wallets.filter((w) => w.source !== "seed").length;
+
+  let text =
+    `📋 *Tracked Wallets Capacity:* *${total}* / *${MAX_CAPACITY}* (${pct}%)\n` +
+    `• Seed Wallets: *${seedCount}* | Auto-Discovered: *${autoCount}*\n\n` +
+    `*Active Tracked Wallets:*\n`;
+
+  const displayList = wallets.slice(0, 25);
+  for (let i = 0; i < displayList.length; i++) {
+    const w = displayList[i];
     const short = `\`${w.address}\``;
-    text += `${i + 1}. ${short}\n   🏷️ Source: _${w.source}_\n`;
+    text += `${i + 1}. ${short} (_${w.source}_)\n`;
   }
-  text += `\n_Helius webhook actively monitors all on-chain SWAP transactions for these addresses._`;
+
+  if (total > 25) {
+    text += `\n_...and ${total - 25} more wallets tracked in real-time._\n`;
+  }
+
+  text += `\n💡 _Tip: Use \`/wallet <address>\` to view full dossier & avatar for any wallet._`;
 
   await sendTelegramMessageTo(chatId, text);
+}
+
+async function handleInspectWallet(chatId: string, address: string | undefined): Promise<void> {
+  if (!address || !SOLANA_ADDRESS_RE.test(address)) {
+    await sendTelegramMessageTo(chatId, "⚠️ Usage: `/wallet <solana wallet address>`");
+    return;
+  }
+
+  await sendTelegramMessageTo(chatId, `🔍 Gathering on-chain intelligence for \`${address}\`...`);
+  const profile = await inspectWalletDetail(address);
+  const text = formatWalletDetailText(profile);
+  const identiconUrl = getWalletIdenticonUrl(address);
+  const buttons = getWalletProfileButtons(address);
+
+  await sendTelegramPhotoTo(chatId, identiconUrl, text, buttons);
 }
 
 async function handleStatus(chatId: string): Promise<void> {
@@ -110,10 +148,12 @@ async function handleStatus(chatId: string): Promise<void> {
 
   const { count: openTrades } = await supabase.from("paper_trades").select("*", { count: "exact", head: true }).eq("status", "open");
   const { count: closedTrades } = await supabase.from("paper_trades").select("*", { count: "exact", head: true }).eq("status", "closed");
+  const { count: totalWallets } = await supabase.from("tracked_wallets").select("*", { count: "exact", head: true });
 
   await sendTelegramMessageTo(
     chatId,
     `📊 *System Status & Activity (Last 24h)*\n\n` +
+      `• Tracked Wallets: *${totalWallets ?? 0}* / *${MAX_CAPACITY}*\n` +
       `• Detected Signals: *${signalCount ?? 0}*\n` +
       `• Open Paper Trades: *${openTrades ?? 0}*\n` +
       `• Closed Paper Trades (All-Time): *${closedTrades ?? 0}*\n\n` +
@@ -271,6 +311,10 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/list":
       case "/wallets":
         await handleList(chatId);
+        break;
+      case "/wallet":
+      case "/inspect":
+        await handleInspectWallet(chatId, args[0]);
         break;
       case "/traders":
       case "/entries":
