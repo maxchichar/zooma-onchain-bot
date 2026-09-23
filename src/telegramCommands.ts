@@ -14,6 +14,7 @@ import {
   openTrendingPaperTrade,
   openManualPaperTrade,
   getOpenPositionsReport,
+  sendPositionsPhotoCards,
   computeStats,
   formatStats,
   setPaperTradingActive,
@@ -233,41 +234,46 @@ async function handleScan(chatId: string, address: string | undefined): Promise<
   ]);
 
   if (pairs.length === 0) {
-    await sendTelegramMessageTo(
-      chatId,
-      `⚠️ No liquidity pairs found for \`${address}\`. It may be brand new or unlisted.`,
-      getTokenTradingButtons(address)
-    );
+    const rugAudit = await evaluateTokenRugRisk(address);
+    const scoreEmoji = rugAudit.securityScore >= 80 ? "🟢" : rugAudit.securityScore >= 50 ? "🟡" : "🚨";
+    const text =
+      `🔬 *Token Security Audit*\n\n` +
+      `• CA: \`${address}\`\n\n` +
+      `🛡️ *Rug Pull Security Score: ${scoreEmoji} ${rugAudit.securityScore}/100*\n` +
+      `• Verdict: *${rugAudit.verdict}*\n\n` +
+      `📋 *Security Checklist:*\n` +
+      rugAudit.checklist.map((c) => `• ${c.name}: *${c.badge}*`).join("\n") + "\n\n" +
+      `ℹ️ _No active Raydium pool listed yet._\n\n` +
+      `⚡ *Snipe & Fast Trade Buttons:*`;
+
+    const imageUrl = getTokenImageUrl(address);
+    await sendTelegramPhotoTo(chatId, imageUrl, text, getTokenTradingButtons(address));
     return;
   }
 
   const pair = pairs.reduce((best, p) => ((p.liquidity?.usd ?? 0) > (best.liquidity?.usd ?? 0) ? p : best), pairs[0]);
   const liqUsd = pair.liquidity?.usd ?? 0;
   const vol24h = pair.volume?.h24 ? `$${Math.round(pair.volume.h24).toLocaleString()}` : "n/a";
-  const price = pair.priceUsd ? `$${pair.priceUsd}` : "n/a";
+  const price = pair.priceUsd ? (Number(pair.priceUsd) < 0.01 ? `$${Number(pair.priceUsd).toFixed(6)}` : `$${Number(pair.priceUsd).toFixed(4)}`) : "n/a";
   const fdv = pair.fdv ? `$${Math.round(pair.fdv).toLocaleString()}` : "n/a";
 
-  const rugAudit = await evaluateTokenRugRisk(address, { topHolderPct: topHolder, liquidityUsd: liqUsd });
+  const rugAudit = await evaluateTokenRugRisk(address, { topHolderPct: topHolder, liquidityUsd: liqUsd, pair });
+  const scoreEmoji = rugAudit.securityScore >= 80 ? "🟢" : rugAudit.securityScore >= 50 ? "🟡" : "🚨";
 
-  let rugSection = `🛡️ *Rug Pull & Security Audit:*\n• Verdict: *${rugAudit.verdict}*\n`;
-  if (rugAudit.mintAuthorityRenounced !== null) {
-    rugSection += `• Mint Authority: ${rugAudit.mintAuthorityRenounced ? "✅ Renounced (Safe)" : "🚨 ACTIVE (Mint Risk)"}\n`;
-  }
-  if (rugAudit.freezeAuthorityRenounced !== null) {
-    rugSection += `• Freeze Authority: ${rugAudit.freezeAuthorityRenounced ? "✅ Renounced (Safe)" : "🚨 ACTIVE (Blacklist Risk)"}\n`;
-  }
-  if (topHolder !== null) {
-    rugSection += `• Top 1 Holder: ${topHolder > 20 ? "⚠️" : "✅"} ~${topHolder.toFixed(1)}% of top-20 balance\n`;
-  }
+  let rugSection =
+    `🛡️ *Rug Pull Security Score: ${scoreEmoji} ${rugAudit.securityScore}/100*\n` +
+    `• Verdict: *${rugAudit.verdict}*\n\n` +
+    `📋 *Security Audit Checklist:*\n` +
+    rugAudit.checklist.map((c) => `• ${c.name}: *${c.badge}* (${c.detail})`).join("\n") + "\n";
 
   if (rugAudit.flags.length > 0) {
-    rugSection += `\n*Risk Flags:*\n` + rugAudit.flags.map((f) => `• ${f}`).join("\n") + `\n`;
+    rugSection += `\n⚠️ *Detected Risk Flags:*\n` + rugAudit.flags.map((f) => `• ${f}`).join("\n") + `\n`;
   }
 
   const text =
     `🔬 *Token Security & Market Scan*\n\n` +
     `*${pair.baseToken.name} ($${pair.baseToken.symbol})*\n` +
-    `CA: \`${address}\`\n\n` +
+    `• Token CA: \`${address}\`\n\n` +
     `📊 *Market Overview:*\n` +
     `• Price: *${price}* | FDV: *${fdv}*\n` +
     `• Liquidity: *$${Math.round(liqUsd).toLocaleString()}* | 24h Vol: *${vol24h}*\n` +
@@ -288,8 +294,8 @@ async function handleTrending(chatId: string): Promise<void> {
     return;
   }
 
-  // Send photo cards for top 3 breakout tokens
-  const topCards = trendingList.slice(0, 3);
+  // Send photo cards for top 5 breakout tokens
+  const topCards = trendingList.slice(0, 5);
   for (let i = 0; i < topCards.length; i++) {
     const t = topCards[i];
     openTrendingPaperTrade(t.tokenAddress).catch(() => {});
@@ -297,7 +303,7 @@ async function handleTrending(chatId: string): Promise<void> {
     const priceStr = Number(t.priceUsd) < 0.01 ? `$${Number(t.priceUsd).toFixed(6)}` : `$${Number(t.priceUsd).toFixed(4)}`;
     const caption =
       `🔥 *#${i + 1} Trending Token | ${t.name} ($${t.symbol})*\n\n` +
-      `• CA: \`${t.tokenAddress}\`\n` +
+      `• Token CA: \`${t.tokenAddress}\`\n` +
       `• Price: *${priceStr}* | FDV: *$${Math.round(t.fdv).toLocaleString()}*\n` +
       `• 24h Volume: *$${Math.round(t.volume24hUsd).toLocaleString()}*\n` +
       `• Liquidity: *$${Math.round(t.liquidityUsd).toLocaleString()}* | Age: *${t.ageHours}h*\n` +
@@ -411,14 +417,46 @@ async function handleWhales(chatId: string): Promise<void> {
     .select("token_mint, details, created_at")
     .eq("signal_type", "WHALE_BUY")
     .order("created_at", { ascending: false })
-    .limit(8);
+    .limit(6);
 
   if (error || !signals || signals.length === 0) {
     await sendTelegramMessageTo(chatId, "ℹ️ No recent whale buys detected yet. As tracked smart money wallets buy, alerts will appear here in real-time.");
     return;
   }
 
-  let text = `🐋 *Recent Smart Money Whale Buys*\n\n`;
+  // Send photo cards for top 2 whale buys
+  const topWhales = signals.slice(0, 2);
+  for (let i = 0; i < topWhales.length; i++) {
+    const s = topWhales[i];
+    const details = s.details as any;
+    const wallet = details?.wallet ? `\`${details.wallet.slice(0, 6)}...${details.wallet.slice(-4)}\`` : "Smart Money";
+    const sol = details?.sol_amount ? `${Number(details.sol_amount).toFixed(2)} SOL` : "Buy";
+    const time = new Date(s.created_at).toLocaleTimeString();
+
+    const pairs = await fetchTokenPairs(s.token_mint).catch(() => []);
+    const pair = pairs.length > 0 ? pairs[0] : undefined;
+    const symbol = pair?.baseToken?.symbol ? `$${pair.baseToken.symbol}` : s.token_mint.slice(0, 8);
+    const name = pair?.baseToken?.name ?? symbol;
+    const imageUrl = getTokenImageUrl(s.token_mint, pair);
+
+    const caption =
+      `🐋 *[SMART MONEY WHALE ACCUMULATION]*\n\n` +
+      `*${name} (${symbol})*\n` +
+      `• Token CA: \`${s.token_mint}\`\n\n` +
+      `💰 *Transaction Metrics:*\n` +
+      `• Buy Volume: *${sol}*\n` +
+      `• Buyer Wallet: ${wallet}\n` +
+      `• Recorded At: *${time}*\n\n` +
+      `⚡ *Trade Fast on Terminals:*`;
+
+    try {
+      await sendTelegramPhotoTo(chatId, imageUrl, caption, getTokenTradingButtons(s.token_mint));
+    } catch {
+      await sendTelegramMessageTo(chatId, caption, getTokenTradingButtons(s.token_mint));
+    }
+  }
+
+  let text = `🐋 *Recent Smart Money Whale Buys Summary*\n\n`;
   for (let i = 0; i < signals.length; i++) {
     const s = signals[i];
     const details = s.details as any;
@@ -426,7 +464,7 @@ async function handleWhales(chatId: string): Promise<void> {
     const sol = details?.sol_amount ? `${Number(details.sol_amount).toFixed(2)} SOL` : "Buy";
     const time = new Date(s.created_at).toLocaleTimeString();
 
-    text += `${i + 1}. ${sol} by ${wallet}\n`;
+    text += `${i + 1}. *${sol}* by ${wallet}\n`;
     text += `   • CA: \`${s.token_mint}\` (${time})\n`;
   }
 
@@ -486,8 +524,7 @@ async function handleDiscover(chatId: string): Promise<void> {
 
 async function handlePositions(chatId: string): Promise<void> {
   await sendTelegramMessageTo(chatId, "📊 Calculating live unrealized PnL on active paper positions...");
-  const report = await getOpenPositionsReport();
-  await sendTelegramMessageTo(chatId, report);
+  await sendPositionsPhotoCards(chatId);
 }
 
 async function handlePerformance(chatId: string): Promise<void> {

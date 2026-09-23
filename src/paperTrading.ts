@@ -458,6 +458,77 @@ export async function getOpenPositionsReport(): Promise<string> {
 }
 
 /**
+ * Sends rich photo cards with token image, contract address, and real-time PnL for active positions.
+ */
+export async function sendPositionsPhotoCards(chatId: string): Promise<void> {
+  const { data: openTrades, error } = await supabase
+    .from("paper_trades")
+    .select("*")
+    .eq("status", "open")
+    .order("entry_time", { ascending: false });
+
+  if (error || !openTrades || openTrades.length === 0) {
+    await sendTelegramMessageTo(
+      chatId,
+      "ℹ️ No active simulated paper trade positions right now.\n\nUse `/papertrade <CA>` to trade any token or `/papertrade on` to auto-trade incoming gem alerts."
+    );
+    return;
+  }
+
+  const displayTrades = (openTrades as OpenTrade[]).slice(0, 5);
+  for (let i = 0; i < displayTrades.length; i++) {
+    const trade = displayTrades[i];
+    const current = await getCurrentPrice(trade.token_mint, trade.category);
+
+    const entryStr = trade.entry_price < 0.01 ? `$${trade.entry_price.toFixed(6)}` : `$${trade.entry_price.toFixed(4)}`;
+    let currentStr = "Fetching...";
+    let pnlLine = "";
+
+    if (current) {
+      currentStr = current.price < 0.01 ? `$${current.price.toFixed(6)}` : `$${current.price.toFixed(4)}`;
+      const { pnlPct, pnlAbsolute } = computePnl(trade.entry_price, current.price, trade.position_size);
+      const icon = pnlPct >= 0 ? "🟢" : "🔴";
+      const sign = pnlPct >= 0 ? "+" : "";
+      pnlLine = `\n• Unrealized PnL: *${sign}${pnlPct.toFixed(1)}%* (${sign}$${pnlAbsolute.toFixed(2)} USD) ${icon}`;
+    }
+
+    const symbol = current?.pair?.baseToken?.symbol ? `$${current.pair.baseToken.symbol}` : trade.token_mint.slice(0, 8);
+    const name = current?.pair?.baseToken?.name ?? symbol;
+    const stopStr = trade.stop_loss_price ? (trade.stop_loss_price < 0.01 ? `$${trade.stop_loss_price.toFixed(6)}` : `$${trade.stop_loss_price.toFixed(4)}`) : "n/a";
+    const targetStr = trade.target_price ? (trade.target_price < 0.01 ? `$${trade.target_price.toFixed(6)}` : `$${trade.target_price.toFixed(4)}`) : "n/a";
+
+    const caption =
+      `💼 *[ACTIVE POSITION #${i + 1} | ${name}]*\n\n` +
+      `• Token: *${symbol}*\n` +
+      `• CA: \`${trade.token_mint}\`\n` +
+      `• Strategy: \`${trade.category}\`\n` +
+      `• Entry Price: *${entryStr}*\n` +
+      `• Current Price: *${currentStr}*` +
+      pnlLine +
+      `\n• Position Size: *$${trade.position_size.toFixed(2)} USD* (Simulated)\n` +
+      `• Stop-Loss (-${STOP_LOSS_PCT}%): *${stopStr}*\n` +
+      `• Take-Profit (+${TAKE_PROFIT_PCT}%): *${targetStr}*\n\n` +
+      `⚡ *Trade Fast on Terminals:*`;
+
+    const imageUrl = getTokenImageUrl(trade.token_mint, current?.pair);
+    const buttons = getTokenTradingButtons(trade.token_mint);
+
+    try {
+      await sendTelegramPhotoTo(chatId, imageUrl, caption, buttons);
+    } catch {
+      await sendTelegramMessageTo(chatId, caption, buttons);
+    }
+  }
+
+  if (openTrades.length > 5) {
+    await sendTelegramMessageTo(
+      chatId,
+      `ℹ️ _Plus ${openTrades.length - 5} more open positions. Total active: ${openTrades.length}._`
+    );
+  }
+}
+
+/**
  * Periodically sends an automated portfolio status update to subscribers if there are open positions.
  */
 export async function sendPeriodicPortfolioDigest(): Promise<void> {
