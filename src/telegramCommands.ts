@@ -24,6 +24,7 @@ import { scanSolidGems, fireSolidGemAlert } from "./solidGems.js";
 import { scanEarly100xGems } from "./early100xGems.js";
 import { fetchTopTrendingSolanaTokens, TrendingTokenDetail } from "./trendingAlerter.js";
 import { scanInsiderDrops } from "./insiderSniper.js";
+import { getRecentPumpDrops } from "./pumpFunStream.js";
 import {
   getWalletIdenticonUrl,
   inspectWalletDetail,
@@ -57,6 +58,7 @@ const HELP_TEXT =
   `🤖 *ZOOMA Onchain Intelligence*\n` +
   `_Automated Solana Breakout Engine & Paper Trader_\n\n` +
   `⚡ *Primary Commands:*\n` +
+  `💊 \`/pump\` : Live Millisecond Pump.fun Drops & Graduations\n` +
   `⚡ \`/insider\` : Ultra-Early Launches (10 - 30m old) & Fast Snipe\n` +
   `💎 \`/gems\` : Live Fresh Gems (< 48h) & 100x Breakouts\n` +
   `🔥 \`/trending\` : Top 15 Live Trending Solana Tokens\n` +
@@ -65,6 +67,7 @@ const HELP_TEXT =
   `🛡️ \`/scan <CA>\` : Instant Token Security Audit & Snipe Links\n` +
   `🐋 \`/wallets\` : Smart Money Tracker & On-Chain Flow\n\n` +
   `🔔 *Automated Real-Time Alerts (24/7):*\n` +
+  `• 💊 Sub-second Pump.fun New Creations & Graduations\n` +
   `• ⚡ Ultra-Early 10m - 30m Insider Drops\n` +
   `• 🚀 Fresh 100x & Solid Gem Breakouts\n` +
   `• 🔥 Viral Trending Solana Volume Spikes\n` +
@@ -575,6 +578,55 @@ async function handleInsider(chatId: string): Promise<void> {
   }
 }
 
+async function handlePumpDrops(chatId: string): Promise<void> {
+  const drops = getRecentPumpDrops(3);
+  if (drops.length === 0) {
+    await sendTelegramMessageTo(
+      chatId,
+      "💊 *Pump.fun Live Stream Active*\n\n" +
+      "Listening to Pumpportal WebSocket stream in real time. Ultra-early token creations and Raydium graduations will appear here and alert in milliseconds as developers launch them."
+    );
+    return;
+  }
+
+  for (let i = 0; i < drops.length; i++) {
+    const drop = drops[i];
+    const devStatus = drop.devHoldingPct < 5.0
+      ? `🟢 Ultra-Safe (${drop.devHoldingPct}% supply)`
+      : drop.devHoldingPct < 10.0
+      ? `🟡 Moderate (${drop.devHoldingPct}% supply)`
+      : `⚠️ High (${drop.devHoldingPct}% supply)`;
+
+    const eventTitle = drop.isRaydiumGraduation
+      ? `🎓 *[PUMP.FUN RAYDIUM GRADUATION]*`
+      : `💊 *[PUMP.FUN INSTANT DROP | MILLISECOND SNIPER]*`;
+
+    const text =
+      `${eventTitle}\n\n` +
+      `*${drop.name} ($${drop.symbol})*\n` +
+      `• Token CA: \`${drop.mint}\`\n\n` +
+      `📊 *Launch Metrics (Pump.fun Live):*\n` +
+      `• Dev Initial Buy: *${drop.solAmount.toFixed(3)} SOL*\n` +
+      `• Dev Supply Share: ${devStatus}\n` +
+      `• Initial Valuation: *~${drop.marketCapSol.toFixed(1)} SOL* (Early micro-entry)\n` +
+      `• Dev Wallet: \`${drop.traderPublicKey ? drop.traderPublicKey.slice(0, 6) + "..." + drop.traderPublicKey.slice(-4) : "Anonymous"}\`\n\n` +
+      `🛡️ *Contract Safety Fundamentals:*\n` +
+      `• Mint Authority: ✅ Renounced (Pump.fun program enforced)\n` +
+      `• Freeze Authority: ✅ Renounced (No blacklist possible)\n` +
+      `• Liquidity: ✅ On Bonding Curve (${drop.isRaydiumGraduation ? "Graduated to Raydium" : "Pre-migration stage"})\n\n` +
+      `⚡ *Execute sub-second trade on fastest terminal:*`;
+
+    const imageUrl = `https://dd.dexscreener.com/ds-data/tokens/solana/${drop.mint}.png`;
+    const buttons = getTokenTradingButtons(drop.mint);
+
+    try {
+      await sendTelegramPhotoTo(chatId, imageUrl, text, buttons);
+    } catch {
+      await sendTelegramMessageTo(chatId, text, buttons);
+    }
+  }
+}
+
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
   const message = update.message;
   if (!message?.text) return;
@@ -601,6 +653,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/wallet":
       case "/inspect":
         await handleInspectWallet(chatId, args[0]);
+        break;
+      case "/pump":
+      case "/pumpfun":
+      case "/drops":
+        await handlePumpDrops(chatId);
         break;
       case "/insider":
       case "/snip":

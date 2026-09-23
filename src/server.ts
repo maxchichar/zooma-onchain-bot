@@ -7,6 +7,7 @@ import { runSolidGemScanOnce } from "./solidGems.js";
 import { runEarly100xScanOnce } from "./early100xGems.js";
 import { runTrendingAutoAlertOnce } from "./trendingAlerter.js";
 import { runInsiderSniperOnce } from "./insiderSniper.js";
+import { startPumpFunStream } from "./pumpFunStream.js";
 import { pollTrackedWalletsActivity } from "./walletTracker.js";
 import { checkOpenTrades, sendPerformanceDigest } from "./paperTrading.js";
 import { sendWalletScoreDigest } from "./walletScoring.js";
@@ -119,6 +120,7 @@ app.listen(PORT, () => {
     runTrendingAutoAlertOnce().catch((err) => console.error("[server] initial trending alert scan error:", err));
     runInsiderSniperOnce().catch((err) => console.error("[server] initial insider sniper error:", err));
     pollTrackedWalletsActivity().catch((err) => console.error("[server] initial wallet poll error:", err));
+    startPumpFunStream();
   });
 });
 
