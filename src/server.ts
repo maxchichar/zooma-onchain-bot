@@ -272,10 +272,9 @@ setInterval(async () => {
 }, RESEARCH_INTERVAL_MINUTES * 60 * 1000);
 
 // ---------- In-process paper-trading scheduler ----------
-// Checks open simulated positions against stop/target/time-limit, and
-// periodically sends a performance digest. This is the module that
-// actually tells you whether any of this is working.
-const PAPER_CHECK_INTERVAL_MINUTES = Number(process.env.PAPER_CHECK_INTERVAL_MINUTES ?? 2);
+// Checks open simulated positions against stop/target/time-limit with dynamic trailing stops,
+// and periodically sends a performance digest.
+const PAPER_CHECK_INTERVAL_SECONDS = Number(process.env.PAPER_CHECK_INTERVAL_SECONDS ?? 15);
 const PAPER_DIGEST_INTERVAL_HOURS = Number(process.env.PAPER_DIGEST_INTERVAL_HOURS ?? 24);
 let paperCheckInFlight = false;
 
@@ -289,7 +288,7 @@ setInterval(async () => {
   } finally {
     paperCheckInFlight = false;
   }
-}, PAPER_CHECK_INTERVAL_MINUTES * 60 * 1000);
+}, PAPER_CHECK_INTERVAL_SECONDS * 1000);
 
 setInterval(async () => {
   try {

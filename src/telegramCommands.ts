@@ -15,6 +15,8 @@ import {
   openManualPaperTrade,
   getOpenPositionsReport,
   sendPositionsPhotoCards,
+  closePaperTradeManually,
+  sendTradeHistory,
   computeStats,
   formatStats,
   setPaperTradingActive,
@@ -68,6 +70,8 @@ const HELP_TEXT =
   `🔥 \`/trending\` : Top 15 Trending Solana Tokens\n` +
   `💼 \`/papertrade [CA]\` : Trade CA ($2 USD) / Configure\n` +
   `📈 \`/positions\` : Live Paper Portfolio & Real-Time PnL\n` +
+  `❌ \`/close <CA>\` : Close Position at Market Price\n` +
+  `📜 \`/history\` : Closed Trades & Win-Rate History\n` +
   `🛡️ \`/scan <CA>\` : Security Audit & Snipe Links\n` +
   `🐋 \`/wallets\` : Smart Money Tracker & Whales\n` +
   `🧠 \`/ai\` : JEV & LLM AI Architecture\n\n` +
@@ -75,7 +79,7 @@ const HELP_TEXT =
   `• 💊 Pump.fun Live Creations & Raydium Migrations\n` +
   `• ⚡ 10m - 30m Verified Insider Drops\n` +
   `• 🚀 Fresh 100x Breakouts & High Volume Spikes\n` +
-  `• 💼 Auto $2 Paper Trades & Take-Profit (+50%) Hits\n\n` +
+  `• 💼 Auto $2 Paper Trades, Breakeven Shields & TP Hits\n\n` +
   `_Sub-second predictive engine running 24/7._`;
 
 async function handleWatch(chatId: string, address: string | undefined): Promise<void> {
@@ -807,6 +811,16 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/paper":
       case "/open":
         await handlePositions(chatId);
+        break;
+      case "/close":
+      case "/sell":
+      case "/exit":
+        await closePaperTradeManually(chatId, args[0]);
+        break;
+      case "/history":
+      case "/closed":
+      case "/past":
+        await sendTradeHistory(chatId);
         break;
       case "/pnl":
       case "/performance":
