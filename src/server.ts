@@ -9,7 +9,7 @@ import { runTrendingAutoAlertOnce } from "./trendingAlerter.js";
 import { runInsiderSniperOnce } from "./insiderSniper.js";
 import { startPumpFunStream } from "./pumpFunStream.js";
 import { pollTrackedWalletsActivity } from "./walletTracker.js";
-import { checkOpenTrades, sendPerformanceDigest } from "./paperTrading.js";
+import { checkOpenTrades, sendPerformanceDigest, sendPeriodicPortfolioDigest } from "./paperTrading.js";
 import { sendWalletScoreDigest } from "./walletScoring.js";
 import { sendResearchScoreDigest } from "./researchScoring.js";
 import { handleTelegramUpdate } from "./telegramCommands.js";
@@ -298,6 +298,16 @@ setInterval(async () => {
     console.error("[server] performance digest failed:", err);
   }
 }, PAPER_DIGEST_INTERVAL_HOURS * 3600 * 1000);
+
+const PORTFOLIO_DIGEST_INTERVAL_MINUTES = Number(process.env.PORTFOLIO_DIGEST_INTERVAL_MINUTES ?? 30);
+
+setInterval(async () => {
+  try {
+    await sendPeriodicPortfolioDigest();
+  } catch (err) {
+    console.error("[server] portfolio digest failed:", err);
+  }
+}, PORTFOLIO_DIGEST_INTERVAL_MINUTES * 60 * 1000);
 
 // ---------- In-process wallet credibility scoring ----------
 // Weekly by default — this depends on paper trades having closed, which

@@ -3,15 +3,63 @@ import path from "path";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const DEFAULT_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const ACTIVE_CHATS_FILE = path.resolve(process.cwd(), ".active_chats.json");
+
+const activeChatIds = new Set<string>();
+
+function loadActiveChats(): void {
+  try {
+    if (fs.existsSync(ACTIVE_CHATS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(ACTIVE_CHATS_FILE, "utf8"));
+      if (Array.isArray(data)) {
+        data.forEach((id) => {
+          if (id) activeChatIds.add(String(id));
+        });
+      }
+    }
+  } catch (err) {
+    console.warn("[telegram] failed to read active chats file:", (err as Error).message);
+  }
+}
+
+function saveActiveChats(): void {
+  try {
+    fs.writeFileSync(ACTIVE_CHATS_FILE, JSON.stringify(Array.from(activeChatIds)), "utf8");
+  } catch (err) {
+    console.warn("[telegram] failed to save active chats file:", (err as Error).message);
+  }
+}
+
+loadActiveChats();
 
 export interface TelegramButton {
   text: string;
   url: string;
 }
 
+export function registerActiveChat(chatId: string): void {
+  if (!chatId) return;
+  if (!activeChatIds.has(chatId)) {
+    activeChatIds.add(chatId);
+    saveActiveChats();
+    console.log(`[telegram] registered active subscriber chat: ${chatId}. Total chats: ${activeChatIds.size}`);
+  }
+}
+
+export function getBroadcastChatIds(): string[] {
+  const ids = new Set<string>();
+  if (DEFAULT_CHAT_ID) {
+    ids.add(DEFAULT_CHAT_ID);
+  }
+  for (const id of activeChatIds) {
+    ids.add(id);
+  }
+  return Array.from(ids);
+}
+
 async function rawSend(chatId: string, text: string, buttons?: TelegramButton[][]): Promise<void> {
   if (!BOT_TOKEN) {
-    console.warn("[telegram] TELEGRAM_BOT_TOKEN not set — logging instead of sending:\n", text);
+    console.warn("[telegram] TELEGRAM_BOT_TOKEN not set, logging message:\n", text);
     return;
   }
 
@@ -19,27 +67,31 @@ async function rawSend(chatId: string, text: string, buttons?: TelegramButton[][
     ? { inline_keyboard: buttons.map((row) => row.map((b) => ({ text: b.text, url: b.url }))) }
     : undefined;
 
-  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: "Markdown",
-      disable_web_page_preview: true,
-      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-    }),
-  });
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: "Markdown",
+        disable_web_page_preview: true,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      }),
+    });
 
-  if (!res.ok) {
-    const body = await res.text();
-    console.error(`[telegram] send failed: ${res.status} ${body}`);
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`[telegram] send failed to ${chatId}: ${res.status} ${body}`);
+    }
+  } catch (err) {
+    console.error(`[telegram] send error to ${chatId}:`, (err as Error).message);
   }
 }
 
 async function rawSendPhoto(chatId: string, photoSource: string, captionText: string, buttons?: TelegramButton[][]): Promise<void> {
   if (!BOT_TOKEN) {
-    console.warn("[telegram] TELEGRAM_BOT_TOKEN not set — logging instead of sending:\n", captionText);
+    console.warn("[telegram] TELEGRAM_BOT_TOKEN not set, logging caption:\n", captionText);
     return;
   }
 
@@ -47,7 +99,6 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
     ? { inline_keyboard: buttons.map((row) => row.map((b) => ({ text: b.text, url: b.url }))) }
     : undefined;
 
-  // Telegram caption limit is 1024 characters.
   const caption = captionText.length > 1024 ? captionText.slice(0, 1020) + "..." : captionText;
 
   try {
@@ -93,38 +144,41 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
 }
 
 /**
- * Sends to the configured default chat (TELEGRAM_CHAT_ID) — used by automated alerts.
+ * Sends to all registered subscriber chats (and TELEGRAM_CHAT_ID) for automated background alerts.
  */
 export async function sendTelegramMessage(text: string, buttons?: TelegramButton[][]): Promise<void> {
-  if (!DEFAULT_CHAT_ID) {
-    console.warn("[telegram] TELEGRAM_CHAT_ID not set — logging instead of sending:\n", text);
+  const chatIds = getBroadcastChatIds();
+  if (chatIds.length === 0) {
+    console.warn("[telegram] no chat IDs configured or registered, logging alert:\n", text);
     return;
   }
-  await rawSend(DEFAULT_CHAT_ID, text, buttons);
+  await Promise.all(chatIds.map((id) => rawSend(id, text, buttons)));
 }
 
 /**
- * Sends a message with a photo to the default chat. Falls back to text message if photo fails.
+ * Sends a photo message to all registered subscriber chats. Falls back to text message if photo fails.
  */
 export async function sendTelegramPhoto(photoUrl: string, text: string, buttons?: TelegramButton[][]): Promise<void> {
-  if (!DEFAULT_CHAT_ID) {
-    console.warn("[telegram] TELEGRAM_CHAT_ID not set — logging instead of sending:\n", text);
+  const chatIds = getBroadcastChatIds();
+  if (chatIds.length === 0) {
+    console.warn("[telegram] no chat IDs configured or registered, logging photo alert:\n", text);
     return;
   }
-  await rawSendPhoto(DEFAULT_CHAT_ID, photoUrl, text, buttons);
+  await Promise.all(chatIds.map((id) => rawSendPhoto(id, photoUrl, text, buttons)));
 }
 
 /**
- * Sends to a SPECIFIC chat — used when replying to an inbound slash command.
+ * Sends to a specific chat when replying to an inbound command.
  */
 export async function sendTelegramMessageTo(chatId: string, text: string, buttons?: TelegramButton[][]): Promise<void> {
+  registerActiveChat(chatId);
   await rawSend(chatId, text, buttons);
 }
 
 /**
- * Sends a photo message to a SPECIFIC chat. Falls back to text message if photo fails.
+ * Sends a photo message to a specific chat.
  */
 export async function sendTelegramPhotoTo(chatId: string, photoUrl: string, text: string, buttons?: TelegramButton[][]): Promise<void> {
+  registerActiveChat(chatId);
   await rawSendPhoto(chatId, photoUrl, text, buttons);
 }
-

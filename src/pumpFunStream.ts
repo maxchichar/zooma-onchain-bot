@@ -166,7 +166,12 @@ async function processPumpDrop(data: any): Promise<void> {
 
   // Open simulated paper trade if active
   if (isPaperTradingActive()) {
-    openPaperTrade(signal.id, drop.mint, "solid_gem").catch((err) => {
+    const solPriceEst = 150;
+    const estPriceUsd = (marketCapSol * solPriceEst) / TOTAL_PUMP_SUPPLY;
+    openPaperTrade(signal.id, drop.mint, "solid_gem", estPriceUsd, {
+      baseToken: { address: drop.mint, name: drop.name, symbol: drop.symbol },
+      dexId: isGraduation ? "raydium" : "pumpfun",
+    }).catch((err) => {
       console.warn("[pumpFunStream] paper trade open error:", (err as Error).message);
     });
   }

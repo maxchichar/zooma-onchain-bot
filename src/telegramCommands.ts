@@ -3,7 +3,7 @@
  * /scan, /trending, /solid, /gems, /whales, /activity, /traders, /discover, /help.
  */
 import { supabase } from "./supabase.js";
-import { sendTelegramMessageTo, sendTelegramPhotoTo } from "./telegram.js";
+import { sendTelegramMessageTo, sendTelegramPhotoTo, registerActiveChat } from "./telegram.js";
 import { refreshWebhookWithCurrentWallets, runDiscoveryOnce } from "./discover.js";
 import { computeAllWalletScores } from "./walletScoring.js";
 import { fetchTokenPairs, fetchLatestBoostedSolanaTokens, getTokenImageUrl } from "./researchSources.js";
@@ -12,6 +12,7 @@ import { getTopHolderConcentration } from "./solanaRpc.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import {
   openTrendingPaperTrade,
+  openManualPaperTrade,
   getOpenPositionsReport,
   computeStats,
   formatStats,
@@ -62,10 +63,11 @@ const HELP_TEXT =
   `⚡ \`/insider\` : Ultra-Early Launches (10 - 30m old) & Fast Snipe\n` +
   `💎 \`/gems\` : Live Fresh Gems (< 48h) & 100x Breakouts\n` +
   `🔥 \`/trending\` : Top 15 Live Trending Solana Tokens\n` +
-  `💼 \`/papertrade\` : Activate / Configure Paper Trading ($2 USD)\n` +
+  `💼 \`/papertrade [CA]\` : Trade CA ($2 USD) or Toggle/Configure\n` +
   `📈 \`/positions\` : Live Paper Portfolio & Real-Time PnL\n` +
   `🛡️ \`/scan <CA>\` : Instant Token Security Audit & Snipe Links\n` +
-  `🐋 \`/wallets\` : Smart Money Tracker & On-Chain Flow\n\n` +
+  `🐋 \`/wallets\` : Smart Money Tracker & On-Chain Flow\n` +
+  `🧠 \`/ai\` : What JEV & LLM Models Are Doing\n\n` +
   `🔔 *Automated Real-Time Alerts (24/7):*\n` +
   `• 💊 Sub-second Pump.fun New Creations & Graduations\n` +
   `• ⚡ Ultra-Early 10m - 30m Insider Drops\n` +
@@ -503,6 +505,13 @@ async function handlePerformance(chatId: string): Promise<void> {
 }
 
 async function handlePaperTradeCommand(chatId: string, action?: string, amountStr?: string): Promise<void> {
+  // If action is a Solana address, open manual paper trade immediately!
+  if (action && SOLANA_ADDRESS_RE.test(action)) {
+    const size = amountStr && !isNaN(Number(amountStr)) && Number(amountStr) > 0 ? Number(amountStr) : undefined;
+    await openManualPaperTrade(chatId, action, size);
+    return;
+  }
+
   const normAction = action?.toLowerCase();
 
   if (normAction === "on" || normAction === "activate" || normAction === "start") {
@@ -529,12 +538,33 @@ async function handlePaperTradeCommand(chatId: string, action?: string, amountSt
     `• Stop-Loss Limit: *-${settings.stopLossPct}%* (Capital protection)\n` +
     `• Max Holding Time: *${settings.maxHoldHours} hours*\n\n` +
     `⚡ *Controls & Quick Commands:*\n` +
+    `• \`/papertrade <CA>\` : Trade specific CA (e.g. \`/papertrade <CA> 2\`)\n` +
     `• \`/papertrade on\` : Activate live simulated trades\n` +
     `• \`/papertrade off\` : Pause auto-trading\n` +
     `• \`/papertrade <size>\` : Set position size (e.g. \`/papertrade 5\`)\n` +
     `• \`/positions\` : Inspect active positions & real-time PnL`;
 
   await sendTelegramMessageTo(chatId, message);
+}
+
+async function handleAiExplanation(chatId: string): Promise<void> {
+  const text =
+    `🧠 *[ZOOMA AI & MACHINE LEARNING ARCHITECTURE]*\n\n` +
+    `*1. JEV (TypeSafe System One):*\n` +
+    `• Role: Quantitative on-chain behavioral classifier\n` +
+    `• What it evaluates: Analyzes multi-wallet transaction timing and volume to detect whether buying volume is organic retail, wash trading, or coordinated sniper rings\n` +
+    `• How it scores: Outputs strictly typed, calibrated mathematical probabilities (0.0 to 1.0) rather than hallucinated text\n\n` +
+    `*2. LLM (Groq / Llama 3):*\n` +
+    `• Role: Anti-hallucination natural language synthesizer\n` +
+    `• What it evaluates: Takes hard deterministic facts (liquidity, holder distribution, mint renounced status, JEV scores) and converts them into clear 2-sentence executive briefings\n` +
+    `• Safety rule: The LLM NEVER decides buy/sell triggers or math. It only formats verified on-chain facts into readable alerts\n\n` +
+    `*3. Deterministic Risk Engines:*\n` +
+    `• Mint authority renounced check\n` +
+    `• Freeze authority renounced check\n` +
+    `• Bonding curve liquidity & top holder concentration audits\n\n` +
+    `_All trading and signal decisions remain 100% deterministic and auditable._`;
+
+  await sendTelegramMessageTo(chatId, text);
 }
 
 async function handleInsider(chatId: string): Promise<void> {
@@ -632,6 +662,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   if (!message?.text) return;
 
   const chatId = String(message.chat.id);
+  registerActiveChat(chatId);
   const [command, ...args] = message.text.trim().split(/\s+/);
 
   try {
@@ -639,6 +670,13 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/start":
       case "/help":
         await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, HELP_TEXT, HELP_BUTTONS);
+        break;
+      case "/ai":
+      case "/models":
+      case "/model":
+      case "/jev":
+      case "/llm":
+        await handleAiExplanation(chatId);
         break;
       case "/watch":
         await handleWatch(chatId, args[0]);

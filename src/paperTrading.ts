@@ -1,13 +1,19 @@
 /**
  * PAPER TRADING ENGINE:
- * Simulates real-time trading for every fired signal (100x gems, solid gems, whale buys, trending).
+ * Simulates real-time trading for every fired signal (100x gems, solid gems, whale buys, trending, manual).
  * Tracks positions against live DEX market prices with stop-loss (-20%), take-profit (+50%), and max hold (48h).
  * Sends instant Telegram alerts when trades open, hit profit targets, or get stopped out.
  */
 import { supabase } from "./supabase.js";
-import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.js";
+import {
+  sendTelegramMessage,
+  sendTelegramPhoto,
+  sendTelegramMessageTo,
+  sendTelegramPhotoTo,
+} from "./telegram.js";
 import { fetchTokenPairs, fetchCollectionStats, getTokenImageUrl } from "./researchSources.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
+import { getRecentPumpDrops } from "./pumpFunStream.js";
 
 let paperTradingEnabled = true;
 let currentPositionSize = Number(process.env.PAPER_POSITION_SIZE ?? 2); // $2 USD virtual notional per trade
@@ -16,6 +22,8 @@ const TAKE_PROFIT_PCT = Number(process.env.PAPER_TAKE_PROFIT_PCT ?? 50); // % ab
 const MAX_HOLD_HOURS = Number(process.env.PAPER_MAX_HOLD_HOURS ?? 48);
 const FEE_PCT = Number(process.env.PAPER_FEE_PCT ?? 1); // per side (entry + exit)
 const SLIPPAGE_PCT = Number(process.env.PAPER_SLIPPAGE_PCT ?? 2); // per side
+
+const milestoneAlertedTrades = new Set<string>();
 
 export function isPaperTradingActive(): boolean {
   return paperTradingEnabled;
@@ -39,7 +47,14 @@ export function getPaperTradingSettings() {
   };
 }
 
-export type Category = "wallet_pattern" | "meme_coin_watch" | "nft_watch" | "trending_trade" | "solid_gem" | "whale_entry";
+export type Category =
+  | "wallet_pattern"
+  | "meme_coin_watch"
+  | "nft_watch"
+  | "trending_trade"
+  | "solid_gem"
+  | "whale_entry"
+  | "manual_entry";
 
 interface CurrentPrice {
   price: number;
@@ -66,12 +81,26 @@ async function getCurrentPrice(tokenOrSymbol: string, category: Category): Promi
 /**
  * Opens a simulated trade for a signal or trending token.
  */
-export async function openPaperTrade(signalId: string | null, tokenOrSymbol: string, category: Category): Promise<void> {
+export async function openPaperTrade(
+  signalId: string | null,
+  tokenOrSymbol: string,
+  category: Category,
+  fallbackPriceUsd?: number,
+  fallbackPair?: any
+): Promise<void> {
   if (!paperTradingEnabled) {
     return;
   }
 
-  const current = await getCurrentPrice(tokenOrSymbol, category);
+  let current = await getCurrentPrice(tokenOrSymbol, category);
+  if (!current && fallbackPriceUsd && fallbackPriceUsd > 0) {
+    current = {
+      price: fallbackPriceUsd,
+      quoteCurrency: "usd",
+      pair: fallbackPair,
+    };
+  }
+
   if (!current) {
     console.warn(`[paperTrading] no price available for ${tokenOrSymbol} (${category}) - skipping paper trade.`);
     return;
@@ -102,6 +131,7 @@ export async function openPaperTrade(signalId: string | null, tokenOrSymbol: str
   if (category === "trending_trade") tag = "TRENDING TRADE";
   else if (category === "solid_gem") tag = "SOLID GEM TRADE";
   else if (category === "whale_entry") tag = "WHALE ENTRY TRADE";
+  else if (category === "manual_entry") tag = "MANUAL ENTRY TRADE";
 
   const entryStr = current.price < 0.01 ? `$${current.price.toFixed(6)}` : `$${current.price.toFixed(4)}`;
   const stopStr = stopLossPrice < 0.01 ? `$${stopLossPrice.toFixed(6)}` : `$${stopLossPrice.toFixed(4)}`;
@@ -132,6 +162,100 @@ export async function openPaperTrade(signalId: string | null, tokenOrSymbol: str
 }
 
 /**
+ * Opens a manual simulated paper trade on demand for a specific contract address.
+ */
+export async function openManualPaperTrade(
+  chatId: string,
+  tokenMint: string,
+  sizeUsd?: number
+): Promise<void> {
+  const positionSize = sizeUsd && sizeUsd > 0 ? sizeUsd : currentPositionSize;
+
+  await sendTelegramMessageTo(chatId, `🔍 Fetching live DEX market pool for \`${tokenMint}\`...`);
+
+  let current = await getCurrentPrice(tokenMint, "solid_gem");
+  let pair = current?.pair;
+
+  // Check pump.fun drops cache if DexScreener is not indexed yet
+  if (!current) {
+    const recent = getRecentPumpDrops(50).find((d) => d.mint === tokenMint);
+    if (recent) {
+      const solPriceEst = 150;
+      const estimatedPrice = (recent.marketCapSol * solPriceEst) / 1_000_000_000;
+      current = {
+        price: estimatedPrice,
+        quoteCurrency: "usd",
+        pair: {
+          baseToken: { address: recent.mint, name: recent.name, symbol: recent.symbol },
+          priceUsd: estimatedPrice.toString(),
+          liquidity: { usd: recent.marketCapSol * solPriceEst },
+          dexId: recent.isRaydiumGraduation ? "raydium" : "pumpfun",
+        },
+      };
+      pair = current.pair;
+    }
+  }
+
+  if (!current || !current.price || current.price <= 0) {
+    await sendTelegramMessageTo(
+      chatId,
+      `⚠️ *Could not resolve live price for CA* \`${tokenMint}\`\n\n` +
+      `No active liquidity pool was found on Raydium, Orca, or Pump.fun yet. If this token was just created, please allow 15 to 30 seconds for pool initialization and try again.`
+    );
+    return;
+  }
+
+  const stopLossPrice = current.price * (1 - STOP_LOSS_PCT / 100);
+  const targetPrice = current.price * (1 + TAKE_PROFIT_PCT / 100);
+  const maxHoldUntil = new Date(Date.now() + MAX_HOLD_HOURS * 3600 * 1000).toISOString();
+
+  const { error } = await supabase.from("paper_trades").insert({
+    signal_id: null,
+    token_mint: tokenMint,
+    category: "manual_entry",
+    quote_currency: current.quoteCurrency,
+    entry_price: current.price,
+    position_size: positionSize,
+    stop_loss_price: stopLossPrice,
+    target_price: targetPrice,
+    max_hold_until: maxHoldUntil,
+  });
+
+  if (error) {
+    console.error("[paperTrading] failed to save manual paper trade:", error.message);
+    await sendTelegramMessageTo(chatId, `❌ Failed to open simulated trade: ${error.message}`);
+    return;
+  }
+
+  const entryStr = current.price < 0.01 ? `$${current.price.toFixed(6)}` : `$${current.price.toFixed(4)}`;
+  const stopStr = stopLossPrice < 0.01 ? `$${stopLossPrice.toFixed(6)}` : `$${stopLossPrice.toFixed(4)}`;
+  const targetStr = targetPrice < 0.01 ? `$${targetPrice.toFixed(6)}` : `$${targetPrice.toFixed(4)}`;
+  const symbol = pair?.baseToken?.symbol ? `$${pair.baseToken.symbol}` : tokenMint.slice(0, 8);
+  const name = pair?.baseToken?.name ?? symbol;
+
+  const message =
+    `🎯 *[MANUAL PAPER TRADE OPENED]*\n\n` +
+    `• Token: *${name} (${symbol})*\n` +
+    `• CA: \`${tokenMint}\`\n` +
+    `• Strategy: \`manual_entry\`\n` +
+    `• Entry Price: *${entryStr} USD*\n` +
+    `• Position Sizing: *$${positionSize.toFixed(2)} USD* (Simulated)\n` +
+    `• Stop-Loss (-${STOP_LOSS_PCT}%): *${stopStr}*\n` +
+    `• Take-Profit (+${TAKE_PROFIT_PCT}%): *${targetStr}*\n` +
+    `• Max Hold: *${MAX_HOLD_HOURS} hours*\n\n` +
+    `_Real-time price tracking active. You will receive an automated alert when target (+50%) or stop-loss (-20%) is hit._`;
+
+  const buttons = getTokenTradingButtons(tokenMint);
+  const imageUrl = getTokenImageUrl(tokenMint, pair);
+
+  if (imageUrl) {
+    await sendTelegramPhotoTo(chatId, imageUrl, message, buttons);
+  } else {
+    await sendTelegramMessageTo(chatId, message, buttons);
+  }
+}
+
+/**
  * Automatically opens a simulated paper trade for a live trending token (if not already opened recently).
  */
 export async function openTrendingPaperTrade(tokenMint: string): Promise<boolean> {
@@ -142,30 +266,33 @@ export async function openTrendingPaperTrade(tokenMint: string): Promise<boolean
       .select("id")
       .eq("token_mint", tokenMint)
       .eq("category", "trending_trade")
-      .gte("entry_time", cutoff)
+      .gte("created_at", cutoff)
       .limit(1);
 
-    if ((data?.length ?? 0) > 0) return false;
+    if (data && data.length > 0) {
+      return false;
+    }
 
     await openPaperTrade(null, tokenMint, "trending_trade");
     return true;
   } catch (err) {
-    console.warn(`[paperTrading] openTrendingPaperTrade failed for ${tokenMint}:`, (err as Error).message);
+    console.warn(`[paperTrading] openTrendingPaperTrade error for ${tokenMint}:`, (err as Error).message);
     return false;
   }
 }
 
 export interface OpenTrade {
   id: string;
+  signal_id: string | null;
   token_mint: string;
   category: Category;
   quote_currency: "usd" | "sol";
   entry_price: number;
+  entry_time: string;
   position_size: number;
   stop_loss_price: number | null;
   target_price: number | null;
   max_hold_until: string;
-  entry_time: string;
 }
 
 function computePnl(entryPrice: number, exitPrice: number, positionSize: number): { pnlPct: number; pnlAbsolute: number; fees: number } {
@@ -249,13 +376,31 @@ export async function checkOpenTrades(): Promise<void> {
 
       if (!current) {
         if (pastMaxHold) {
-          console.warn(`[paperTrading] ${trade.token_mint} unpriceable at max-hold — closing with no PnL data.`);
+          console.warn(`[paperTrading] ${trade.token_mint} unpriceable at max-hold - closing with no PnL data.`);
           await supabase
             .from("paper_trades")
             .update({ status: "closed", exit_reason: "price_unavailable", exit_time: new Date().toISOString() })
             .eq("id", trade.id);
         }
         continue;
+      }
+
+      const { pnlPct, pnlAbsolute } = computePnl(trade.entry_price, current.price, trade.position_size);
+
+      // Milestone gain alert (+25%)
+      if (pnlPct >= 25 && !milestoneAlertedTrades.has(`${trade.id}_25`)) {
+        milestoneAlertedTrades.add(`${trade.id}_25`);
+        const symbol = current.pair?.baseToken?.symbol ? `$${current.pair.baseToken.symbol}` : trade.token_mint.slice(0, 8);
+        const currentStr = current.price < 0.01 ? `$${current.price.toFixed(6)}` : `$${current.price.toFixed(4)}`;
+        const msg =
+          `🚀 *[PAPER TRADE PROGRESS: +${pnlPct.toFixed(1)}% GAIN]*\n\n` +
+          `• Token: *${symbol}*\n` +
+          `• CA: \`${trade.token_mint}\`\n` +
+          `• Current Price: *${currentStr}* (Entry: *$${trade.entry_price.toFixed(4)}*)\n` +
+          `• Unrealized Profit: *+$${pnlAbsolute.toFixed(2)} USD* (+${pnlPct.toFixed(1)}%)\n` +
+          `• Target Remaining: *${(TAKE_PROFIT_PCT - pnlPct).toFixed(1)}%* to Target Exit (+${TAKE_PROFIT_PCT}%)\n\n` +
+          `_Running live tracking. Take-profit will auto-execute when reached._`;
+        sendTelegramMessage(msg, getTokenTradingButtons(trade.token_mint)).catch(() => {});
       }
 
       if (trade.stop_loss_price !== null && current.price <= trade.stop_loss_price) {
@@ -310,6 +455,29 @@ export async function getOpenPositionsReport(): Promise<string> {
 
   text += `_Exits automatically at Target (+${TAKE_PROFIT_PCT}%), Stop-Loss (-${STOP_LOSS_PCT}%), or ${MAX_HOLD_HOURS}h._`;
   return text;
+}
+
+/**
+ * Periodically sends an automated portfolio status update to subscribers if there are open positions.
+ */
+export async function sendPeriodicPortfolioDigest(): Promise<void> {
+  const { data: openTrades, error } = await supabase
+    .from("paper_trades")
+    .select("id")
+    .eq("status", "open")
+    .limit(1);
+
+  if (error || !openTrades || openTrades.length === 0) {
+    return; // Don't send empty spam if no positions are active
+  }
+
+  const report = await getOpenPositionsReport();
+  const summaryMessage =
+    `💼 *[AUTOMATED 30M PORTFOLIO UPDATE]*\n\n` +
+    report +
+    `\n\n_Auto-monitored 24/7. Target (+${TAKE_PROFIT_PCT}%) and stop-loss (-${STOP_LOSS_PCT}%) will trigger instant exit alerts._`;
+
+  await sendTelegramMessage(summaryMessage);
 }
 
 export interface PaperTradingStats {
@@ -402,7 +570,7 @@ export function formatStats(label: string, stats: PaperTradingStats): string {
   return (
     `*${label} (${stats.closedTrades} closed trades):*\n` +
     `• Win Rate: *${((stats.winRate ?? 0) * 100).toFixed(0)}%* | Avg PnL: *${stats.avgPnlPct?.toFixed(1)}%*\n` +
-    `• Profit Factor: *${stats.profitFactor === Infinity ? "∞ (no losses)" : stats.profitFactor?.toFixed(2)}*\n` +
+    `• Profit Factor: *${stats.profitFactor === Infinity ? "infinity (no losses)" : stats.profitFactor?.toFixed(2)}*\n` +
     `• Total PnL: *${currencyLines || "n/a"}* | Max Drawdown: *${stats.maxDrawdownPct?.toFixed(1)}%*\n` +
     `• Verdict: *${stats.verdict}*`
   );
