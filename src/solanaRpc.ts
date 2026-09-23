@@ -31,7 +31,18 @@ export async function getTopHolderConcentration(mint: string): Promise<number | 
     if (accounts.length === 0) return null;
     const total = accounts.reduce((s, a) => s + Number(a.amount), 0);
     if (total === 0) return null;
-    return Number(accounts[0].amount) / total;
+
+    const firstFraction = Number(accounts[0].amount) / total;
+    // If account 0 holds > 40% of supply, it is almost always the AMM pool vault (Raydium / PumpSwap).
+    // In that case, evaluate the largest individual holder (account 1) relative to circulating supply.
+    if (firstFraction > 0.40 && accounts.length > 1) {
+      const circulating = total - Number(accounts[0].amount);
+      if (circulating > 0) {
+        return Number(accounts[1].amount) / circulating;
+      }
+    }
+
+    return firstFraction;
   } catch (err) {
     console.warn(`[solanaRpc] holder concentration check failed for ${mint}:`, (err as Error).message);
     return null;

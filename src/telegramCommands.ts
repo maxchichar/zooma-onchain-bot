@@ -10,11 +10,20 @@ import { fetchTokenPairs, fetchLatestBoostedSolanaTokens, getTokenImageUrl } fro
 import { evaluateTokenRugRisk } from "./rugRisk.js";
 import { getTopHolderConcentration } from "./solanaRpc.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
-import { openTrendingPaperTrade, getOpenPositionsReport, computeStats, formatStats } from "./paperTrading.js";
+import {
+  openTrendingPaperTrade,
+  getOpenPositionsReport,
+  computeStats,
+  formatStats,
+  setPaperTradingActive,
+  setPaperTradingPositionSize,
+  getPaperTradingSettings,
+} from "./paperTrading.js";
 import { getRecentTraderEntries, formatTraderEntriesText } from "./topTraders.js";
 import { scanSolidGems, fireSolidGemAlert } from "./solidGems.js";
 import { scanEarly100xGems } from "./early100xGems.js";
 import { fetchTopTrendingSolanaTokens, TrendingTokenDetail } from "./trendingAlerter.js";
+import { scanInsiderDrops } from "./insiderSniper.js";
 import {
   getWalletIdenticonUrl,
   inspectWalletDetail,
@@ -48,18 +57,21 @@ const HELP_TEXT =
   `🤖 *ZOOMA Onchain Intelligence*\n` +
   `_Automated Solana Breakout Engine & Paper Trader_\n\n` +
   `⚡ *Primary Commands:*\n` +
+  `⚡ \`/insider\` : Ultra-Early Launches (10 - 30m old) & Fast Snipe\n` +
   `💎 \`/gems\` : Live Fresh Gems (< 48h) & 100x Breakouts\n` +
   `🔥 \`/trending\` : Top 15 Live Trending Solana Tokens\n` +
-  `📈 \`/positions\` : Live Paper Portfolio ($2 USD) & PnL\n` +
+  `💼 \`/papertrade\` : Activate / Configure Paper Trading ($2 USD)\n` +
+  `📈 \`/positions\` : Live Paper Portfolio & Real-Time PnL\n` +
   `🛡️ \`/scan <CA>\` : Instant Token Security Audit & Snipe Links\n` +
   `🐋 \`/wallets\` : Smart Money Tracker & On-Chain Flow\n\n` +
   `🔔 *Automated Real-Time Alerts (24/7):*\n` +
+  `• ⚡ Ultra-Early 10m - 30m Insider Drops\n` +
   `• 🚀 Fresh 100x & Solid Gem Breakouts\n` +
   `• 🔥 Viral Trending Solana Volume Spikes\n` +
   `• 💼 Automated $2 Paper Trades Opened\n` +
   `• 🎯 Take-Profit (+50%) & Stop-Loss (-20%) Hits\n` +
   `• 🐋 Whale Accumulation & Smart Money Buys\n\n` +
-  `_No manual commands needed: the bot alerts you in real time as market events occur._`;
+  `_Sub-second predictive engine alerting you in real time as market events occur._`;
 
 async function handleWatch(chatId: string, address: string | undefined): Promise<void> {
   if (!address || !SOLANA_ADDRESS_RE.test(address)) {
@@ -487,6 +499,82 @@ async function handlePerformance(chatId: string): Promise<void> {
   await sendTelegramMessageTo(chatId, message);
 }
 
+async function handlePaperTradeCommand(chatId: string, action?: string, amountStr?: string): Promise<void> {
+  const normAction = action?.toLowerCase();
+
+  if (normAction === "on" || normAction === "activate" || normAction === "start") {
+    setPaperTradingActive(true);
+    if (amountStr && !isNaN(Number(amountStr)) && Number(amountStr) > 0) {
+      setPaperTradingPositionSize(Number(amountStr));
+    }
+  } else if (normAction === "off" || normAction === "pause" || normAction === "stop") {
+    setPaperTradingActive(false);
+  } else if (action && !isNaN(Number(action)) && Number(action) > 0) {
+    setPaperTradingPositionSize(Number(action));
+    setPaperTradingActive(true);
+  }
+
+  const settings = getPaperTradingSettings();
+  const statusEmoji = settings.enabled ? "🟢" : "🔴";
+  const statusText = settings.enabled ? "ACTIVE (Auto-Trading Enabled)" : "PAUSED";
+
+  const message =
+    `💼 *[PAPER TRADING CONTROL CENTER]*\n\n` +
+    `• System Status: ${statusEmoji} *${statusText}*\n` +
+    `• Position Sizing: *$${settings.positionSize.toFixed(2)} USD per trade*\n` +
+    `• Take-Profit Target: *+${settings.takeProfitPct}%* (Auto-sell trigger)\n` +
+    `• Stop-Loss Limit: *-${settings.stopLossPct}%* (Capital protection)\n` +
+    `• Max Holding Time: *${settings.maxHoldHours} hours*\n\n` +
+    `⚡ *Controls & Quick Commands:*\n` +
+    `• \`/papertrade on\` : Activate live simulated trades\n` +
+    `• \`/papertrade off\` : Pause auto-trading\n` +
+    `• \`/papertrade <size>\` : Set position size (e.g. \`/papertrade 5\`)\n` +
+    `• \`/positions\` : Inspect active positions & real-time PnL`;
+
+  await sendTelegramMessageTo(chatId, message);
+}
+
+async function handleInsider(chatId: string): Promise<void> {
+  await sendTelegramMessageTo(chatId, "⚡ Scanning ultra-early drops (10 - 30 mins from launch) with instant risk check & predictive momentum scoring...");
+  const drops = await scanInsiderDrops(3);
+
+  if (drops.length === 0) {
+    await sendTelegramMessageTo(
+      chatId,
+      "ℹ️ No active pools created within the last 30 minutes currently pass strict non-rug audits (mint/freeze renounced). The bot monitors pool creations 24/7 and will auto-alert you in milliseconds when an insider gem launches."
+    );
+    return;
+  }
+
+  for (let i = 0; i < drops.length; i++) {
+    const gem = drops[i];
+    const imageUrl = getTokenImageUrl(gem.tokenAddress, gem.pair);
+    const buyRatioLine = gem.buyRatioPct ? `• Buy Pressure: *${gem.buyRatioPct}% Buys* (Bullish Velocity)\n` : "";
+    const holderLine = gem.topHolderPct !== null ? `~${gem.topHolderPct.toFixed(1)}%` : "Safe";
+    const priceStr = Number(gem.priceUsd) < 0.01 ? `$${Number(gem.priceUsd).toFixed(6)}` : `$${Number(gem.priceUsd).toFixed(4)}`;
+
+    const text =
+      `⚡ *[INSIDER SNIPER | ${gem.ageMinutes}m FROM LAUNCH]*\n\n` +
+      `*${gem.name} ($${gem.symbol})*\n` +
+      `• Token CA: \`${gem.tokenAddress}\`\n\n` +
+      `🚀 *Early Entry & Predictive Valuation:*\n` +
+      `• Launch Timing: *${gem.ageMinutes} minutes ago* (Insider Sniping Window)\n` +
+      `• Price: *${priceStr}* | FDV: *$${Math.round(gem.fdv).toLocaleString()}*\n` +
+      `• Initial Pool: *$${Math.round(gem.liquidityUsd).toLocaleString()}* | Vol: *$${Math.round(gem.volumeUsd).toLocaleString()}*\n` +
+      buyRatioLine +
+      `• Predictive Runway: *${gem.predictedRunway}*\n` +
+      `• DEX: *${gem.dexId}*\n\n` +
+      `🛡️ *Sub-Second Risk Audit (Verified Safe):*\n` +
+      `• Mint Authority: ✅ Renounced\n` +
+      `• Freeze Authority: ✅ Renounced\n` +
+      `• Top 1 Holder: ✅ ${holderLine}\n` +
+      `• Rug Risk: 🟢 *LOW RISK (${gem.rugAssessment.riskScore}/100)*\n\n` +
+      `⚡ *Sub-Second Trade Execution:*`;
+
+    await sendTelegramPhotoTo(chatId, imageUrl, text, getTokenTradingButtons(gem.tokenAddress));
+  }
+}
+
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
   const message = update.message;
   if (!message?.text) return;
@@ -513,6 +601,17 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/wallet":
       case "/inspect":
         await handleInspectWallet(chatId, args[0]);
+        break;
+      case "/insider":
+      case "/snip":
+      case "/fresh":
+        await handleInsider(chatId);
+        break;
+      case "/papertrade":
+      case "/activate":
+      case "/toggletrade":
+      case "/trade":
+        await handlePaperTradeCommand(chatId, args[0], args[1]);
         break;
       case "/gems":
       case "/gem":

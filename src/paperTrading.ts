@@ -9,12 +9,35 @@ import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.js";
 import { fetchTokenPairs, fetchCollectionStats, getTokenImageUrl } from "./researchSources.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 
-const POSITION_SIZE = Number(process.env.PAPER_POSITION_SIZE ?? 2); // $2 USD virtual notional per trade
+let paperTradingEnabled = true;
+let currentPositionSize = Number(process.env.PAPER_POSITION_SIZE ?? 2); // $2 USD virtual notional per trade
 const STOP_LOSS_PCT = Number(process.env.PAPER_STOP_LOSS_PCT ?? 20); // % below entry
 const TAKE_PROFIT_PCT = Number(process.env.PAPER_TAKE_PROFIT_PCT ?? 50); // % above entry
 const MAX_HOLD_HOURS = Number(process.env.PAPER_MAX_HOLD_HOURS ?? 48);
 const FEE_PCT = Number(process.env.PAPER_FEE_PCT ?? 1); // per side (entry + exit)
 const SLIPPAGE_PCT = Number(process.env.PAPER_SLIPPAGE_PCT ?? 2); // per side
+
+export function isPaperTradingActive(): boolean {
+  return paperTradingEnabled;
+}
+
+export function setPaperTradingActive(active: boolean): void {
+  paperTradingEnabled = active;
+}
+
+export function setPaperTradingPositionSize(usd: number): void {
+  if (usd > 0) currentPositionSize = usd;
+}
+
+export function getPaperTradingSettings() {
+  return {
+    enabled: paperTradingEnabled,
+    positionSize: currentPositionSize,
+    stopLossPct: STOP_LOSS_PCT,
+    takeProfitPct: TAKE_PROFIT_PCT,
+    maxHoldHours: MAX_HOLD_HOURS,
+  };
+}
 
 export type Category = "wallet_pattern" | "meme_coin_watch" | "nft_watch" | "trending_trade" | "solid_gem" | "whale_entry";
 
@@ -44,9 +67,13 @@ async function getCurrentPrice(tokenOrSymbol: string, category: Category): Promi
  * Opens a simulated trade for a signal or trending token.
  */
 export async function openPaperTrade(signalId: string | null, tokenOrSymbol: string, category: Category): Promise<void> {
+  if (!paperTradingEnabled) {
+    return;
+  }
+
   const current = await getCurrentPrice(tokenOrSymbol, category);
   if (!current) {
-    console.warn(`[paperTrading] no price available for ${tokenOrSymbol} (${category}) — skipping paper trade.`);
+    console.warn(`[paperTrading] no price available for ${tokenOrSymbol} (${category}) - skipping paper trade.`);
     return;
   }
 
@@ -60,7 +87,7 @@ export async function openPaperTrade(signalId: string | null, tokenOrSymbol: str
     category,
     quote_currency: current.quoteCurrency,
     entry_price: current.price,
-    position_size: POSITION_SIZE,
+    position_size: currentPositionSize,
     stop_loss_price: stopLossPrice,
     target_price: targetPrice,
     max_hold_until: maxHoldUntil,
@@ -88,7 +115,7 @@ export async function openPaperTrade(signalId: string | null, tokenOrSymbol: str
     `• CA: \`${tokenOrSymbol}\`\n` +
     `• Strategy: \`${category}\`\n` +
     `• Entry Price: *${entryStr} ${current.quoteCurrency.toUpperCase()}*\n` +
-    `• Position Size: *$${POSITION_SIZE.toFixed(2)} ${current.quoteCurrency.toUpperCase()}* (Simulated)\n` +
+    `• Position Size: *$${currentPositionSize.toFixed(2)} ${current.quoteCurrency.toUpperCase()}* (Simulated)\n` +
     `• Stop-Loss (-${STOP_LOSS_PCT}%): *${stopStr}*\n` +
     `• Take-Profit (+${TAKE_PROFIT_PCT}%): *${targetStr}*\n` +
     `• Max Hold: *${MAX_HOLD_HOURS} hours*\n\n` +

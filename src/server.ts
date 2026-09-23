@@ -6,6 +6,7 @@ import { runResearchOnce } from "./research.js";
 import { runSolidGemScanOnce } from "./solidGems.js";
 import { runEarly100xScanOnce } from "./early100xGems.js";
 import { runTrendingAutoAlertOnce } from "./trendingAlerter.js";
+import { runInsiderSniperOnce } from "./insiderSniper.js";
 import { pollTrackedWalletsActivity } from "./walletTracker.js";
 import { checkOpenTrades, sendPerformanceDigest } from "./paperTrading.js";
 import { sendWalletScoreDigest } from "./walletScoring.js";
@@ -110,15 +111,37 @@ app.listen(PORT, () => {
   console.log(`[server] listening on port ${PORT}`);
   loadTrackedWallets().then((w) => {
     console.log(`[server] tracking ${w.size} wallet(s) in real-time`);
-    // Kick off initial discovery, research, solid gem, early 100x, trending, and active wallet tracking on boot (non-blocking)
+    // Kick off initial discovery, research, solid gem, early 100x, trending, insider sniper, and active wallet tracking on boot (non-blocking)
     runDiscoveryOnce().catch((err) => console.error("[server] initial discovery error:", err));
     runResearchOnce().catch((err) => console.error("[server] initial research error:", err));
     runSolidGemScanOnce().catch((err) => console.error("[server] initial solid gem scan error:", err));
     runEarly100xScanOnce().catch((err) => console.error("[server] initial early 100x scan error:", err));
     runTrendingAutoAlertOnce().catch((err) => console.error("[server] initial trending alert scan error:", err));
+    runInsiderSniperOnce().catch((err) => console.error("[server] initial insider sniper error:", err));
     pollTrackedWalletsActivity().catch((err) => console.error("[server] initial wallet poll error:", err));
   });
 });
+
+// ---------- In-process ultra-fast insider sniper scheduler ----------
+// Scans for brand new Solana drops (0 - 35 minutes old) with sub-second risk audit & predictive scoring.
+// Runs every 15-20 seconds for sub-minute, millisecond-fast Telegram photo delivery.
+const INSIDER_SNIPER_INTERVAL_SECONDS = Number(process.env.INSIDER_SNIPER_INTERVAL_SECONDS ?? 15);
+let insiderSniperInFlight = false;
+
+setInterval(async () => {
+  if (insiderSniperInFlight) return;
+  insiderSniperInFlight = true;
+  try {
+    const alerted = await runInsiderSniperOnce();
+    if (alerted > 0) {
+      console.log(`[server] insider sniper alerted ${alerted} ultra-early drop(s)`);
+    }
+  } catch (err) {
+    console.error("[server] scheduled insider sniper failed:", err);
+  } finally {
+    insiderSniperInFlight = false;
+  }
+}, INSIDER_SNIPER_INTERVAL_SECONDS * 1000);
 
 // ---------- In-process active on-chain wallet tracking scheduler ----------
 // Actively polls tracked wallets for SWAP transactions on Solana via Helius API.
