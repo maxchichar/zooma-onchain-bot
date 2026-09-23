@@ -1,45 +1,19 @@
 /**
- * PAPER TRADING — this is the module that actually answers "would this
- * make money," which nothing else in this bot does yet. Every signal
- * (wallet ACCUMULATION, meme coin watch, NFT watch) opens a simulated
- * position automatically. No real funds move. Ever.
- *
- * DESIGN CHOICES:
- *
- * - Entry price is the market price at the moment the trade opens, same
- *   source the research/signal modules already use (DexScreener for SPL
- *   tokens, Magic Eden floor price for NFTs) — no new price feed
- *   dependency introduced.
- *
- * - Fees and slippage are MODELED, not ignored (PAPER_FEE_PCT,
- *   PAPER_SLIPPAGE_PCT, applied on both entry and exit). A backtest that
- *   ignores these overstates performance — this is the #1 way naive
- *   paper trading lies to you.
- *
- * - Exits are rule-based and bounded: stop-loss, take-profit, or a hard
- *   time limit (PAPER_MAX_HOLD_HOURS). The time limit exists because
- *   meme coins in particular can sit indefinitely without hitting either
- *   threshold — without a bound, "open positions" would just accumulate
- *   forever and never produce a closed-trade answer.
- *
- * - pnl_pct (not absolute PnL) is the primary number for aggregate
- *   stats, because trades mix two different quote currencies (USD for
- *   tokens via DexScreener, SOL for NFTs via Magic Eden — no invented
- *   SOL/USD conversion here). Percentage return is comparable across
- *   both; absolute PnL is reported separately, grouped by currency.
- *
- * - computeStats() can and will say "NO EDGE DETECTED" when expectancy
- *   is non-positive. That's a correct output, not a bug to fix.
+ * PAPER TRADING ENGINE:
+ * Simulates real-time trading for every fired signal (100x gems, solid gems, whale buys, trending).
+ * Tracks positions against live DEX market prices with stop-loss (-20%), take-profit (+50%), and max hold (48h).
+ * Sends instant Telegram alerts when trades open, hit profit targets, or get stopped out.
  */
 import { supabase } from "./supabase.js";
-import { sendTelegramMessage } from "./telegram.js";
-import { fetchTokenPairs, fetchCollectionStats } from "./researchSources.js";
+import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.js";
+import { fetchTokenPairs, fetchCollectionStats, getTokenImageUrl } from "./researchSources.js";
+import { getTokenTradingButtons } from "./tradeLinks.js";
 
-const POSITION_SIZE = Number(process.env.PAPER_POSITION_SIZE ?? 100); // in the trade's own quote currency
+const POSITION_SIZE = Number(process.env.PAPER_POSITION_SIZE ?? 100); // $100 USD virtual notional
 const STOP_LOSS_PCT = Number(process.env.PAPER_STOP_LOSS_PCT ?? 20); // % below entry
 const TAKE_PROFIT_PCT = Number(process.env.PAPER_TAKE_PROFIT_PCT ?? 50); // % above entry
 const MAX_HOLD_HOURS = Number(process.env.PAPER_MAX_HOLD_HOURS ?? 48);
-const FEE_PCT = Number(process.env.PAPER_FEE_PCT ?? 1); // per side (entry AND exit each pay this)
+const FEE_PCT = Number(process.env.PAPER_FEE_PCT ?? 1); // per side (entry + exit)
 const SLIPPAGE_PCT = Number(process.env.PAPER_SLIPPAGE_PCT ?? 2); // per side
 
 export type Category = "wallet_pattern" | "meme_coin_watch" | "nft_watch" | "trending_trade" | "solid_gem" | "whale_entry";
@@ -47,14 +21,15 @@ export type Category = "wallet_pattern" | "meme_coin_watch" | "nft_watch" | "tre
 interface CurrentPrice {
   price: number;
   quoteCurrency: "usd" | "sol";
+  pair?: any;
 }
 
-/** Best-effort current price. Returns null if unavailable (thin liquidity, delisted, RPC hiccup, etc). */
+/** Best-effort current price. Returns null if unavailable. */
 async function getCurrentPrice(tokenOrSymbol: string, category: Category): Promise<CurrentPrice | null> {
   if (category === "nft_watch") {
     const stats = await fetchCollectionStats(tokenOrSymbol, "24h");
     if (!stats?.floorPrice) return null;
-    return { price: stats.floorPrice / 1_000_000_000, quoteCurrency: "sol" }; // lamports -> SOL
+    return { price: stats.floorPrice / 1_000_000_000, quoteCurrency: "sol" };
   }
 
   const pairs = await fetchTokenPairs(tokenOrSymbol);
@@ -62,11 +37,11 @@ async function getCurrentPrice(tokenOrSymbol: string, category: Category): Promi
   const pair = pairs.reduce((best, p) => ((p.liquidity?.usd ?? 0) > (best.liquidity?.usd ?? 0) ? p : best), pairs[0]);
   const priceUsd = pair.priceUsd ? Number(pair.priceUsd) : null;
   if (!priceUsd) return null;
-  return { price: priceUsd, quoteCurrency: "usd" };
+  return { price: priceUsd, quoteCurrency: "usd", pair };
 }
 
 /**
- * Opens a simulated trade for a signal or trending token. Best-effort and non-blocking.
+ * Opens a simulated trade for a signal or trending token.
  */
 export async function openPaperTrade(signalId: string | null, tokenOrSymbol: string, category: Category): Promise<void> {
   const current = await getCurrentPrice(tokenOrSymbol, category);
@@ -96,19 +71,37 @@ export async function openPaperTrade(signalId: string | null, tokenOrSymbol: str
     return;
   }
 
-  let tag = "PAPER TRADE";
+  let tag = "SIMULATED PAPER TRADE";
   if (category === "trending_trade") tag = "TRENDING TRADE";
   else if (category === "solid_gem") tag = "SOLID GEM TRADE";
   else if (category === "whale_entry") tag = "WHALE ENTRY TRADE";
 
-  await sendTelegramMessage(
-    `*[${tag} OPENED]*\n` +
-      `${category === "nft_watch" ? "Collection" : "Token"}: \`${tokenOrSymbol}\`\n` +
-      `Category: \`${category}\`\n` +
-      `Entry: $${current.price < 0.01 ? current.price.toFixed(6) : current.price.toFixed(4)} ${current.quoteCurrency.toUpperCase()}\n` +
-      `Stop: ${stopLossPrice.toFixed(6)} | Target: ${targetPrice.toFixed(6)} | Max hold: ${MAX_HOLD_HOURS}h\n\n` +
-      `_Simulated only — tracking live performance net of fees & slippage._`
-  );
+  const entryStr = current.price < 0.01 ? `$${current.price.toFixed(6)}` : `$${current.price.toFixed(4)}`;
+  const stopStr = stopLossPrice < 0.01 ? `$${stopLossPrice.toFixed(6)}` : `$${stopLossPrice.toFixed(4)}`;
+  const targetStr = targetPrice < 0.01 ? `$${targetPrice.toFixed(6)}` : `$${targetPrice.toFixed(4)}`;
+
+  const symbol = current.pair?.baseToken?.symbol ? `$${current.pair.baseToken.symbol}` : tokenOrSymbol.slice(0, 8);
+
+  const message =
+    `🎯 *[${tag} OPENED]*\n\n` +
+    `• Token: *${symbol}*\n` +
+    `• CA: \`${tokenOrSymbol}\`\n` +
+    `• Strategy: \`${category}\`\n` +
+    `• Entry Price: *${entryStr} ${current.quoteCurrency.toUpperCase()}*\n` +
+    `• Position Size: *$${POSITION_SIZE.toFixed(2)} ${current.quoteCurrency.toUpperCase()}* (Simulated)\n` +
+    `• Stop-Loss (-${STOP_LOSS_PCT}%): *${stopStr}*\n` +
+    `• Take-Profit (+${TAKE_PROFIT_PCT}%): *${targetStr}*\n` +
+    `• Max Hold: *${MAX_HOLD_HOURS} hours*\n\n` +
+    `_Live tracking active against real DEX prices (fees & slippage modeled)._`;
+
+  const buttons = category !== "nft_watch" ? getTokenTradingButtons(tokenOrSymbol) : undefined;
+  const imageUrl = category !== "nft_watch" ? getTokenImageUrl(tokenOrSymbol, current.pair) : undefined;
+
+  if (imageUrl) {
+    await sendTelegramPhoto(imageUrl, message, buttons);
+  } else {
+    await sendTelegramMessage(message, buttons);
+  }
 }
 
 /**
@@ -135,7 +128,7 @@ export async function openTrendingPaperTrade(tokenMint: string): Promise<boolean
   }
 }
 
-interface OpenTrade {
+export interface OpenTrade {
   id: string;
   token_mint: string;
   category: Category;
@@ -145,6 +138,7 @@ interface OpenTrade {
   stop_loss_price: number | null;
   target_price: number | null;
   max_hold_until: string;
+  entry_time: string;
 }
 
 function computePnl(entryPrice: number, exitPrice: number, positionSize: number): { pnlPct: number; pnlAbsolute: number; fees: number } {
@@ -182,14 +176,35 @@ async function closeTrade(trade: OpenTrade, exitPrice: number, exitReason: strin
     return;
   }
 
-  const resultWord = pnlAbsolute >= 0 ? "PROFIT" : "LOSS";
-  await sendTelegramMessage(
-    `*[PAPER TRADE CLOSED: ${resultWord}]*\n` +
-      `${trade.category === "nft_watch" ? "Collection" : "Token"}: \`${trade.token_mint}\`\n` +
-      `• Exit Reason: ${exitReason}\n` +
-      `• PnL: *${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%* (${pnlAbsolute.toFixed(2)} ${trade.quote_currency.toUpperCase()}, fees ${fees.toFixed(2)} included)\n\n` +
-      `_Simulated only (no real funds involved)._`
-  );
+  let emoji = "📊";
+  let title = "PAPER TRADE CLOSED";
+  if (exitReason === "target") {
+    emoji = "🎉";
+    title = `TAKE-PROFIT HIT (+${pnlPct.toFixed(1)}%)`;
+  } else if (exitReason === "stop_loss") {
+    emoji = "🛑";
+    title = `STOP-LOSS TRIGGERED (${pnlPct.toFixed(1)}%)`;
+  } else if (exitReason === "time_exit") {
+    emoji = "⏰";
+    title = `TIME LIMIT EXIT (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%)`;
+  }
+
+  const pnlSign = pnlAbsolute >= 0 ? "+" : "";
+  const entryStr = trade.entry_price < 0.01 ? `$${trade.entry_price.toFixed(6)}` : `$${trade.entry_price.toFixed(4)}`;
+  const exitStr = exitPrice < 0.01 ? `$${exitPrice.toFixed(6)}` : `$${exitPrice.toFixed(4)}`;
+
+  const message =
+    `${emoji} *[PAPER TRADE: ${title}]*\n\n` +
+    `• Target CA: \`${trade.token_mint}\`\n` +
+    `• Strategy: \`${trade.category}\`\n` +
+    `• Entry: *${entryStr}* ➡️ Exit: *${exitStr}*\n` +
+    `• Realized Net PnL: *${pnlSign}${pnlPct.toFixed(1)}%* (*${pnlSign}$${pnlAbsolute.toFixed(2)} ${trade.quote_currency.toUpperCase()}*)\n` +
+    `• Modeled Fees: *$${fees.toFixed(2)}*\n` +
+    `• Exit Trigger: \`${exitReason}\`\n\n` +
+    `_Simulated performance tracking net of modeled fees & slippage._`;
+
+  const buttons = trade.category !== "nft_watch" ? getTokenTradingButtons(trade.token_mint) : undefined;
+  await sendTelegramMessage(message, buttons);
 }
 
 /** Checks every open trade against its stop/target/time-limit. Call on a schedule. */
@@ -206,9 +221,6 @@ export async function checkOpenTrades(): Promise<void> {
       const pastMaxHold = new Date(trade.max_hold_until).getTime() <= Date.now();
 
       if (!current) {
-        // Can't price it — if we're also past the time limit, close it
-        // out as unpriceable rather than let it hang forever; otherwise
-        // just try again next cycle.
         if (pastMaxHold) {
           console.warn(`[paperTrading] ${trade.token_mint} unpriceable at max-hold — closing with no PnL data.`);
           await supabase
@@ -232,6 +244,47 @@ export async function checkOpenTrades(): Promise<void> {
   }
 }
 
+/**
+ * Generates a live report of all currently open paper trade positions with unrealized PnL.
+ */
+export async function getOpenPositionsReport(): Promise<string> {
+  const { data: openTrades, error } = await supabase
+    .from("paper_trades")
+    .select("*")
+    .eq("status", "open")
+    .order("entry_time", { ascending: false });
+
+  if (error || !openTrades || openTrades.length === 0) {
+    return "ℹ️ No open simulated paper trade positions right now. Trades open automatically when gem alerts, whale buys, or signals fire.";
+  }
+
+  let text = `📈 *Active Simulated Paper Positions (${openTrades.length} Open)*\n\n`;
+  for (let i = 0; i < openTrades.length; i++) {
+    const trade = openTrades[i] as OpenTrade;
+    const current = await getCurrentPrice(trade.token_mint, trade.category);
+
+    const entryStr = trade.entry_price < 0.01 ? `$${trade.entry_price.toFixed(6)}` : `$${trade.entry_price.toFixed(4)}`;
+    let currentStr = "Pending...";
+    let pnlLine = "";
+
+    if (current) {
+      currentStr = current.price < 0.01 ? `$${current.price.toFixed(6)}` : `$${current.price.toFixed(4)}`;
+      const { pnlPct, pnlAbsolute } = computePnl(trade.entry_price, current.price, trade.position_size);
+      const icon = pnlPct >= 0 ? "🟢" : "🔴";
+      const sign = pnlPct >= 0 ? "+" : "";
+      pnlLine = `\n   • Unrealized PnL: *${sign}${pnlPct.toFixed(1)}%* (${sign}$${pnlAbsolute.toFixed(2)} USD) ${icon}`;
+    }
+
+    const symbol = current?.pair?.baseToken?.symbol ? `$${current.pair.baseToken.symbol}` : `Token ${i + 1}`;
+    text += `${i + 1}. *${symbol}* (\`${trade.category}\`)\n`;
+    text += `   • CA: \`${trade.token_mint}\`\n`;
+    text += `   • Entry: ${entryStr} ➡️ Current: ${currentStr}${pnlLine}\n\n`;
+  }
+
+  text += `_Exits automatically at Target (+${TAKE_PROFIT_PCT}%), Stop-Loss (-${STOP_LOSS_PCT}%), or ${MAX_HOLD_HOURS}h._`;
+  return text;
+}
+
 export interface PaperTradingStats {
   windowDays: number;
   closedTrades: number;
@@ -244,11 +297,6 @@ export interface PaperTradingStats {
   verdict: "NO EDGE DETECTED" | "POSITIVE EXPECTANCY (SMALL SAMPLE)" | "INSUFFICIENT DATA";
 }
 
-/**
- * "If I had followed every signal generated in the last N days, what
- * would have happened?" — the exact question your original brief asked
- * this system to be able to answer.
- */
 export async function computeStats(windowDays: number, category?: Category): Promise<PaperTradingStats> {
   const since = new Date(Date.now() - windowDays * 24 * 3600 * 1000).toISOString();
   let query = supabase.from("paper_trades").select("*").eq("status", "closed").gte("entry_time", since);
@@ -283,9 +331,6 @@ export async function computeStats(windowDays: number, category?: Category): Pro
 
   const expectancyPct = avgPnlPct;
 
-  // Max drawdown over the sequence of trades ordered by entry time, on
-  // cumulative pnl_pct (a simplified equity curve — treats each trade as
-  // an equal-sized bet adding linearly, not compounding geometrically).
   const sorted = [...trades].sort(
     (a, b) => new Date(a.entry_time).getTime() - new Date(b.entry_time).getTime()
   );
@@ -320,9 +365,9 @@ export async function computeStats(windowDays: number, category?: Category): Pro
   };
 }
 
-function formatStats(label: string, stats: PaperTradingStats): string {
+export function formatStats(label: string, stats: PaperTradingStats): string {
   if (stats.closedTrades === 0) {
-    return `*${label}:* 0 closed trades (no data yet)`;
+    return `*${label}:* 0 closed trades (collecting live data)`;
   }
   const currencyLines = Object.entries(stats.totalPnlByCurrency)
     .map(([cur, total]) => `${total.toFixed(2)} ${cur.toUpperCase()}`)

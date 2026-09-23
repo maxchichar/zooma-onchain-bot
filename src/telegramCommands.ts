@@ -10,7 +10,7 @@ import { fetchTokenPairs, fetchLatestBoostedSolanaTokens, getTokenImageUrl } fro
 import { evaluateTokenRugRisk } from "./rugRisk.js";
 import { getTopHolderConcentration } from "./solanaRpc.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
-import { openTrendingPaperTrade } from "./paperTrading.js";
+import { openTrendingPaperTrade, getOpenPositionsReport, computeStats, formatStats } from "./paperTrading.js";
 import { getRecentTraderEntries, formatTraderEntriesText } from "./topTraders.js";
 import { scanSolidGems, fireSolidGemAlert } from "./solidGems.js";
 import { scanEarly100xGems } from "./early100xGems.js";
@@ -46,11 +46,14 @@ interface TelegramUpdate {
 const HELP_TEXT =
   `🤖 *ZOOMA Onchain Analysis Bot | Command Center*\n` +
   `_Track. Analyze. Spot Alpha._\n\n` +
-  `*🚀 100x Potential & Solid Gems:*\n` +
+  `*🚀 100x Potential & Solid Gems (< 48h):*\n` +
   `• \`/100x\` or \`/early\` : Scan fresh micro-cap gems with 100x breakout runway\n` +
   `• \`/solid\` or \`/gems\` : Scan & list verified non-rug pull solid tokens\n` +
   `• \`/scan <token CA>\` : Complete rug check, photo, liquidity & fast trade links\n` +
   `• \`/trending\` : Live trending Solana tokens with sniper buttons\n\n` +
+  `*📈 Live Paper Trading & Simulated Positions:*\n` +
+  `• \`/positions\` or \`/trades\` : View all active open simulated positions with live PnL\n` +
+  `• \`/pnl\` or \`/performance\` : View overall win-rate, total profit & expectancy\n\n` +
   `*🐋 Smart Money & Whale Tracking (Up to 5,000):*\n` +
   `• \`/whales\` : View recent large buys by smart money wallets\n` +
   `• \`/activity\` or \`/feed\` : Real-time live on-chain swap stream\n` +
@@ -60,8 +63,8 @@ const HELP_TEXT =
   `• \`/watch <address>\` : Add a wallet to real-time tracking\n` +
   `• \`/unwatch <address>\` : Remove a wallet from tracking\n` +
   `• \`/discover\` : Trigger an instant wallet auto-discovery pass\n\n` +
-  `*📊 Analytics & Performance:*\n` +
-  `• \`/status\` : 24h signal activity and open paper positions\n` +
+  `*📊 Analytics & Leaderboards:*\n` +
+  `• \`/status\` : 24h signal activity and system health\n` +
   `• \`/scores\` : Wallet credibility leaderboard\n` +
   `• \`/help\` : Show this guide`;
 
@@ -440,6 +443,23 @@ async function handleDiscover(chatId: string): Promise<void> {
   }
 }
 
+async function handlePositions(chatId: string): Promise<void> {
+  await sendTelegramMessageTo(chatId, "📊 Calculating live unrealized PnL on active paper positions...");
+  const report = await getOpenPositionsReport();
+  await sendTelegramMessageTo(chatId, report);
+}
+
+async function handlePerformance(chatId: string): Promise<void> {
+  const [d7, d30, d90] = await Promise.all([computeStats(7), computeStats(30), computeStats(90)]);
+  const message =
+    `📊 *[PAPER TRADING PERFORMANCE & EXPECTANCY]*\n\n` +
+    `${formatStats("Last 7 Days", d7)}\n\n` +
+    `${formatStats("Last 30 Days", d30)}\n\n` +
+    `${formatStats("Last 90 Days", d90)}\n\n` +
+    `_Statistical Note: Expectancy metrics become robust after 20+ closed trades._`;
+  await sendTelegramMessageTo(chatId, message);
+}
+
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
   const message = update.message;
   if (!message?.text) return;
@@ -476,6 +496,17 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/gems":
       case "/gem":
         await handleSolid(chatId);
+        break;
+      case "/positions":
+      case "/trades":
+      case "/paper":
+      case "/open":
+        await handlePositions(chatId);
+        break;
+      case "/pnl":
+      case "/performance":
+      case "/stats":
+        await handlePerformance(chatId);
         break;
       case "/whales":
       case "/whale":

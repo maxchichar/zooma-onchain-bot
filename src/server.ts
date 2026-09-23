@@ -205,7 +205,7 @@ setInterval(async () => {
 // Checks open simulated positions against stop/target/time-limit, and
 // periodically sends a performance digest. This is the module that
 // actually tells you whether any of this is working.
-const PAPER_CHECK_INTERVAL_MINUTES = Number(process.env.PAPER_CHECK_INTERVAL_MINUTES ?? 10);
+const PAPER_CHECK_INTERVAL_MINUTES = Number(process.env.PAPER_CHECK_INTERVAL_MINUTES ?? 2);
 const PAPER_DIGEST_INTERVAL_HOURS = Number(process.env.PAPER_DIGEST_INTERVAL_HOURS ?? 24);
 let paperCheckInFlight = false;
 
