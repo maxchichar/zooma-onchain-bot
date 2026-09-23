@@ -12,6 +12,8 @@ import { evaluateTokenRugRisk } from "./rugRisk.js";
 const ACCUMULATION_THRESHOLD = Number(process.env.ACCUMULATION_THRESHOLD ?? 3);
 const ACCUMULATION_WINDOW_MINUTES = Number(process.env.ACCUMULATION_WINDOW_MINUTES ?? 120);
 const SIGNAL_COOLDOWN_HOURS = Number(process.env.SIGNAL_COOLDOWN_HOURS ?? 6);
+const WHALE_BUY_THRESHOLD_SOL = Number(process.env.WHALE_BUY_THRESHOLD_SOL ?? 1.0);
+const WHALE_COOLDOWN_HOURS = Number(process.env.WHALE_COOLDOWN_HOURS ?? 2);
 
 /**
  * Turns one Helius enhanced transaction into zero or more (wallet, buy/sell)
@@ -103,6 +105,89 @@ async function isInCooldown(tokenMint: string, signalType: string): Promise<bool
   return (data?.length ?? 0) > 0;
 }
 
+async function isWhaleInCooldown(tokenMint: string, wallet: string): Promise<boolean> {
+  const cutoff = new Date(Date.now() - WHALE_COOLDOWN_HOURS * 3600 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("signals")
+    .select("id, details")
+    .eq("token_mint", tokenMint)
+    .eq("signal_type", "WHALE_BUY")
+    .gte("created_at", cutoff);
+
+  if (error) return true;
+  return (data ?? []).some((row) => (row.details as any)?.wallet === wallet);
+}
+
+/**
+ * Fires an instant Whale / Smart Money Buy Alert when a tracked wallet executes a significant buy.
+ */
+async function handleWhaleBuy(leg: ParsedLeg): Promise<void> {
+  if (leg.solAmount < WHALE_BUY_THRESHOLD_SOL) return;
+  if (await isWhaleInCooldown(leg.mint, leg.wallet)) return;
+
+  const pairs = await fetchTokenPairs(leg.mint).catch(() => []);
+  const pair = pairs.length > 0 ? pairs[0] : undefined;
+  const imageUrl = getTokenImageUrl(leg.mint, pair);
+  const rugAudit = await evaluateTokenRugRisk(leg.mint, { liquidityUsd: pair?.liquidity?.usd });
+
+  const { data: signal, error } = await supabase
+    .from("signals")
+    .insert({
+      token_mint: leg.mint,
+      signal_type: "WHALE_BUY",
+      category: "whale_entry",
+      status: "UNVALIDATED",
+      details: {
+        wallet: leg.wallet,
+        sol_amount: leg.solAmount,
+        token_amount: leg.tokenAmount,
+        signature: leg.signature,
+        rug_risk: rugAudit,
+      },
+    })
+    .select()
+    .single();
+
+  if (error || !signal) {
+    console.error("[signalEngine] failed to record whale buy signal:", error?.message);
+    return;
+  }
+
+  await supabase.from("signal_evidence").insert([
+    {
+      signal_id: signal.id,
+      signature: leg.signature,
+      wallet: leg.wallet,
+    },
+  ]);
+
+  const shortWallet = `${leg.wallet.slice(0, 6)}...${leg.wallet.slice(-4)}`;
+  const symbolLine = pair?.baseToken?.symbol ? `*${pair.baseToken.name} ($${pair.baseToken.symbol})*\n` : "";
+  const priceUsd = pair?.priceUsd ? `$${pair.priceUsd}` : "n/a";
+  const liqUsd = pair?.liquidity?.usd ? `$${Math.round(pair.liquidity.usd).toLocaleString()}` : "n/a";
+
+  const message =
+    `🐋 *[SMART MONEY BUY ALERT]*\n\n` +
+    symbolLine +
+    `• Token CA: \`${leg.mint}\`\n` +
+    `• Smart Buyer: \`${leg.wallet}\`\n` +
+    `• Buy Size: *${leg.solAmount.toFixed(2)} SOL*\n` +
+    `• Token Price: *${priceUsd}* | Liq: *${liqUsd}*\n\n` +
+    `🛡️ *Rug Risk Audit:* ${rugAudit.verdict}\n` +
+    `• Mint Authority: ${rugAudit.mintAuthorityRenounced ? "✅ Renounced" : "🚨 Active"}\n` +
+    `• Freeze Authority: ${rugAudit.freezeAuthorityRenounced ? "✅ Renounced" : "🚨 Active"}\n` +
+    `🧾 *Signature:* [Solscan](https://solscan.io/tx/${leg.signature})\n\n` +
+    `⚡ *Execute instant trade on fast terminal:*`;
+
+  await sendTelegramPhoto(imageUrl, message, getTokenTradingButtons(leg.mint));
+
+  try {
+    await openPaperTrade(signal.id, leg.mint, "whale_entry");
+  } catch (err) {
+    console.error("[signalEngine] paper trade error for whale buy:", (err as Error).message);
+  }
+}
+
 async function fireSignal(
   tokenMint: string,
   signalType: string,
@@ -176,9 +261,7 @@ async function fireSignal(
 /**
  * Core rule: if >= ACCUMULATION_THRESHOLD distinct tracked wallets bought
  * the same token within the trailing ACCUMULATION_WINDOW_MINUTES, fire an
- * ACCUMULATION signal (subject to cooldown). Deliberately the ONLY rule
- * wired up right now — start narrow, add DISTRIBUTION/WATCH rules only
- * once this one has been observed against real data for a while.
+ * ACCUMULATION signal (subject to cooldown).
  */
 async function checkAccumulation(tokenMint: string): Promise<void> {
   const windowStart = new Date(Date.now() - ACCUMULATION_WINDOW_MINUTES * 60 * 1000).toISOString();
@@ -257,6 +340,11 @@ export async function processTransaction(tx: HeliusEnhancedTx, trackedWallets: S
         entryTime: new Date(leg.timestamp * 1000).toISOString(),
         traderCategory: "smart_money",
         source: "onchain_tx",
+      });
+
+      // Real-time instant whale buy check
+      await handleWhaleBuy(leg).catch((err) => {
+        console.warn("[signalEngine] handleWhaleBuy error:", (err as Error).message);
       });
     }
   }

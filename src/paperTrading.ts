@@ -42,7 +42,7 @@ const MAX_HOLD_HOURS = Number(process.env.PAPER_MAX_HOLD_HOURS ?? 48);
 const FEE_PCT = Number(process.env.PAPER_FEE_PCT ?? 1); // per side (entry AND exit each pay this)
 const SLIPPAGE_PCT = Number(process.env.PAPER_SLIPPAGE_PCT ?? 2); // per side
 
-export type Category = "wallet_pattern" | "meme_coin_watch" | "nft_watch" | "trending_trade";
+export type Category = "wallet_pattern" | "meme_coin_watch" | "nft_watch" | "trending_trade" | "solid_gem" | "whale_entry";
 
 interface CurrentPrice {
   price: number;
@@ -96,7 +96,11 @@ export async function openPaperTrade(signalId: string | null, tokenOrSymbol: str
     return;
   }
 
-  const tag = category === "trending_trade" ? "TRENDING TRADE" : "PAPER TRADE";
+  let tag = "PAPER TRADE";
+  if (category === "trending_trade") tag = "TRENDING TRADE";
+  else if (category === "solid_gem") tag = "SOLID GEM TRADE";
+  else if (category === "whale_entry") tag = "WHALE ENTRY TRADE";
+
   await sendTelegramMessage(
     `*[${tag} OPENED]*\n` +
       `${category === "nft_watch" ? "Collection" : "Token"}: \`${tokenOrSymbol}\`\n` +

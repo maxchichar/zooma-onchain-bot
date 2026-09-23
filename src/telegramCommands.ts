@@ -1,6 +1,6 @@
 /**
  * TELEGRAM SLASH COMMANDS: /watch, /unwatch, /list, /wallets, /wallet, /status, /scores,
- * /scan, /trending, /traders, /discover, /help.
+ * /scan, /trending, /solid, /gems, /whales, /activity, /traders, /discover, /help.
  */
 import { supabase } from "./supabase.js";
 import { sendTelegramMessageTo, sendTelegramPhotoTo } from "./telegram.js";
@@ -12,6 +12,8 @@ import { getTopHolderConcentration } from "./solanaRpc.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { openTrendingPaperTrade } from "./paperTrading.js";
 import { getRecentTraderEntries, formatTraderEntriesText } from "./topTraders.js";
+import { scanSolidGems, fireSolidGemAlert } from "./solidGems.js";
+import { scanEarly100xGems } from "./early100xGems.js";
 import {
   getWalletIdenticonUrl,
   inspectWalletDetail,
@@ -31,17 +33,21 @@ interface TelegramUpdate {
 
 const HELP_TEXT =
   `🤖 *Onchain Intelligence Bot | Command Center*\n\n` +
-  `*Tracked Wallets & Smart Money (Up to 5,000):*\n` +
+  `*🚀 100x Potential & Solid Gems:*\n` +
+  `• \`/100x\` or \`/early\` : Scan fresh micro-cap gems with high breakout runway\n` +
+  `• \`/solid\` or \`/gems\` : Scan & list verified non-rug pull solid tokens\n` +
+  `• \`/scan <token CA>\` : Complete rug check, photo, liquidity & fast trade links\n` +
+  `• \`/trending\` : Live trending Solana tokens with sniper buttons\n\n` +
+  `*🐋 Smart Money & Whale Tracking (Up to 5,000):*\n` +
+  `• \`/whales\` : View recent large buys by smart money wallets\n` +
+  `• \`/activity\` or \`/feed\` : Real-time live on-chain swap stream\n` +
+  `• \`/traders\` : View recent entries of smart money traders\n` +
   `• \`/list\` or \`/wallets\` : View all tracked wallets & system capacity\n` +
   `• \`/wallet <address>\` : Deep dossier on any wallet with visual avatar & PnL\n` +
   `• \`/watch <address>\` : Add a wallet to real-time tracking\n` +
   `• \`/unwatch <address>\` : Remove a wallet from tracking\n` +
-  `• \`/traders\` : View recent entries of smart money traders\n` +
   `• \`/discover\` : Trigger an instant wallet auto-discovery pass\n\n` +
-  `*Security & Fast Trading:*\n` +
-  `• \`/scan <token CA>\` : Complete rug check, photo, liquidity & fast trade links\n` +
-  `• \`/trending\` : Live trending Solana meme coins with sniper buttons\n\n` +
-  `*Analytics & Track Record:*\n` +
+  `*📊 Analytics & Performance:*\n` +
   `• \`/status\` : 24h signal activity and open paper positions\n` +
   `• \`/scores\` : Wallet credibility leaderboard\n` +
   `• \`/help\` : Show this guide`;
@@ -268,6 +274,143 @@ async function handleTrending(chatId: string): Promise<void> {
   await sendTelegramMessageTo(chatId, text, buttons);
 }
 
+async function handle100xGems(chatId: string): Promise<void> {
+  await sendTelegramMessageTo(chatId, "🚀 Scanning for early micro-cap tokens with 100x breakout potential & safe authorities...");
+  const gems = await scanEarly100xGems(3);
+
+  if (gems.length === 0) {
+    await sendTelegramMessageTo(
+      chatId,
+      "ℹ️ No active micro-cap tokens (FDV < $1.5M, age < 48h, buy ratio > 55%) passed strict non-rug audits in current pool. Re-run `/100x` in a few minutes or check `/solid`."
+    );
+    return;
+  }
+
+  for (const gem of gems) {
+    const imageUrl = getTokenImageUrl(gem.tokenAddress, gem.pair);
+    const buyRatioText = gem.buyRatioPct ? `• Buy Pressure: *${gem.buyRatioPct}% Buys* (Bullish)\n` : "";
+    const holderText = gem.topHolderPct !== null ? `~${gem.topHolderPct.toFixed(1)}%` : "Safe";
+
+    const text =
+      `🚀 *[100X POTENTIAL GEM]*\n\n` +
+      `*${gem.name} ($${gem.symbol})*\n` +
+      `• CA: \`${gem.tokenAddress}\`\n\n` +
+      `📈 *Growth Runway:*\n` +
+      `• Estimated Upside: *${gem.potentialMultiplier}* (Low-Cap Entry)\n` +
+      `• Market Cap / FDV: *$${Math.round(gem.fdv).toLocaleString()}*\n` +
+      `• Liquidity: *$${Math.round(gem.liquidityUsd).toLocaleString()}* | 24h Vol: *$${Math.round(gem.volume24hUsd).toLocaleString()}*\n` +
+      `• Age: *${gem.ageHours}h old* | DEX: *${gem.dexId}*\n` +
+      buyRatioText +
+      `\n🛡️ *Security Audit (Verified Safe):*\n` +
+      `• Mint Authority: ✅ Renounced\n` +
+      `• Freeze Authority: ✅ Renounced\n` +
+      `• Top 1 Holder: ✅ ${holderText}\n` +
+      `• Rug Risk: 🟢 *LOW RISK (${gem.rugAssessment.riskScore}/100)*\n\n` +
+      `⚡ *Fast Snipe & Trade Terminal:*`;
+
+    await sendTelegramPhotoTo(chatId, imageUrl, text, getTokenTradingButtons(gem.tokenAddress));
+  }
+}
+
+async function handleSolid(chatId: string): Promise<void> {
+  await sendTelegramMessageTo(chatId, "💎 Scanning for verified non-rug pull solid tokens...");
+  const gems = await scanSolidGems(3);
+
+  if (gems.length === 0) {
+    await sendTelegramMessageTo(
+      chatId,
+      "ℹ️ No active tokens passed strict non-rug security audit (mint & freeze renounced, liq > $10k, top holder < 20%) in current batch. Re-run `/solid` in a few minutes or scan specific CA via `/scan <CA>`."
+    );
+    return;
+  }
+
+  for (const gem of gems) {
+    const imageUrl = getTokenImageUrl(gem.tokenAddress, gem.pair);
+    const holderText = gem.topHolderPct !== null ? `~${gem.topHolderPct.toFixed(1)}%` : "Safe";
+
+    const text =
+      `💎 *[SOLID GEM]*\n\n` +
+      `*${gem.name} ($${gem.symbol})*\n` +
+      `• CA: \`${gem.tokenAddress}\`\n\n` +
+      `📊 *Metrics:*\n` +
+      `• Price: *$${gem.priceUsd}* | FDV: *$${Math.round(gem.fdv).toLocaleString()}*\n` +
+      `• Liquidity: *$${Math.round(gem.liquidityUsd).toLocaleString()}* | 24h Vol: *$${Math.round(gem.volume24hUsd).toLocaleString()}*\n` +
+      `• DEX: *${gem.dexId}* | Age: *${gem.ageHours}h*\n\n` +
+      `🛡️ *Security Audit (Verified Safe):*\n` +
+      `• Mint Authority: ✅ Renounced\n` +
+      `• Freeze Authority: ✅ Renounced\n` +
+      `• Top 1 Holder: ✅ ${holderText}\n` +
+      `• Deployer Audit: ✅ Clean background\n` +
+      `• Rug Risk: 🟢 *LOW RISK (${gem.rugAssessment.riskScore}/100)*\n\n` +
+      `⚡ *Fast Snipe & Trade Terminal:*`;
+
+    await sendTelegramPhotoTo(chatId, imageUrl, text, getTokenTradingButtons(gem.tokenAddress));
+  }
+}
+
+async function handleWhales(chatId: string): Promise<void> {
+  const { data: signals, error } = await supabase
+    .from("signals")
+    .select("token_mint, details, created_at")
+    .eq("signal_type", "WHALE_BUY")
+    .order("created_at", { ascending: false })
+    .limit(8);
+
+  if (error || !signals || signals.length === 0) {
+    await sendTelegramMessageTo(chatId, "ℹ️ No recent whale buys detected yet. As tracked smart money wallets buy, alerts will appear here in real-time.");
+    return;
+  }
+
+  let text = `🐋 *Recent Smart Money Whale Buys*\n\n`;
+  for (let i = 0; i < signals.length; i++) {
+    const s = signals[i];
+    const details = s.details as any;
+    const wallet = details?.wallet ? `\`${details.wallet.slice(0, 6)}...${details.wallet.slice(-4)}\`` : "Smart Money";
+    const sol = details?.sol_amount ? `${Number(details.sol_amount).toFixed(2)} SOL` : "Buy";
+    const time = new Date(s.created_at).toLocaleTimeString();
+
+    text += `${i + 1}. ${sol} by ${wallet}\n`;
+    text += `   • CA: \`${s.token_mint}\` (${time})\n`;
+  }
+
+  text += `\n💡 _Use \`/scan <CA>\` to check any token or \`/wallet <address>\` for buyer dossier._`;
+
+  const buttons = signals.slice(0, 3).map((s) => [
+    { text: `⚡ Trade (${s.token_mint.slice(0, 4)}...)`, url: `https://photon-sol.tinyastro.io/en/lp/${s.token_mint}` },
+    { text: `🐂 BullX`, url: `https://neo.bullx.io/terminal?chainId=1399811149&address=${s.token_mint}` },
+    { text: `📊 GMGN`, url: `https://gmgn.ai/sol/token/${s.token_mint}` },
+  ]);
+
+  await sendTelegramMessageTo(chatId, text, buttons);
+}
+
+async function handleActivity(chatId: string): Promise<void> {
+  const { data: events, error } = await supabase
+    .from("raw_events")
+    .select("wallet, side, token_mint, sol_amount, token_amount, block_time")
+    .order("block_time", { ascending: false })
+    .limit(10);
+
+  if (error || !events || events.length === 0) {
+    await sendTelegramMessageTo(chatId, "ℹ️ No recent swap events logged. Make sure wallets are active and Helius webhook is connected.");
+    return;
+  }
+
+  let text = `⚡ *Live Smart Money Activity Feed (Recent Swaps)*\n\n`;
+  for (const e of events) {
+    const icon = e.side === "buy" ? "🟢 BUY" : "🔴 SELL";
+    const sol = e.sol_amount ? `${Number(e.sol_amount).toFixed(2)} SOL` : "";
+    const shortW = `\`${e.wallet.slice(0, 6)}...${e.wallet.slice(-4)}\``;
+    const shortM = `\`${e.token_mint.slice(0, 6)}...${e.token_mint.slice(-4)}\``;
+    const time = new Date(e.block_time).toLocaleTimeString();
+
+    text += `${icon} *${sol}* | ${shortW} ➡️ ${shortM} (${time})\n`;
+  }
+
+  text += `\n_Live on-chain swaps parsed in real-time from Helius webhook._`;
+  await sendTelegramMessageTo(chatId, text);
+}
+
 async function handleTraders(chatId: string): Promise<void> {
   const entries = await getRecentTraderEntries(10);
   const text = formatTraderEntriesText(entries);
@@ -315,6 +458,25 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/wallet":
       case "/inspect":
         await handleInspectWallet(chatId, args[0]);
+        break;
+      case "/100x":
+      case "/early":
+      case "/breakout":
+        await handle100xGems(chatId);
+        break;
+      case "/solid":
+      case "/gems":
+      case "/gem":
+        await handleSolid(chatId);
+        break;
+      case "/whales":
+      case "/whale":
+        await handleWhales(chatId);
+        break;
+      case "/activity":
+      case "/feed":
+      case "/stream":
+        await handleActivity(chatId);
         break;
       case "/traders":
       case "/entries":

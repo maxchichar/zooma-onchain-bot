@@ -3,6 +3,8 @@ import { supabase } from "./supabase.js";
 import { processTransaction } from "./signalEngine.js";
 import { runDiscoveryOnce } from "./discover.js";
 import { runResearchOnce } from "./research.js";
+import { runSolidGemScanOnce } from "./solidGems.js";
+import { runEarly100xScanOnce } from "./early100xGems.js";
 import { checkOpenTrades, sendPerformanceDigest } from "./paperTrading.js";
 import { sendWalletScoreDigest } from "./walletScoring.js";
 import { sendResearchScoreDigest } from "./researchScoring.js";
@@ -105,9 +107,11 @@ app.listen(PORT, () => {
   console.log(`[server] listening on port ${PORT}`);
   loadTrackedWallets().then((w) => {
     console.log(`[server] tracking ${w.size} wallet(s) in real-time`);
-    // Kick off an initial discovery and research pass immediately on boot (non-blocking)
+    // Kick off initial discovery, research, solid gem, and early 100x passes immediately on boot (non-blocking)
     runDiscoveryOnce().catch((err) => console.error("[server] initial discovery error:", err));
     runResearchOnce().catch((err) => console.error("[server] initial research error:", err));
+    runSolidGemScanOnce().catch((err) => console.error("[server] initial solid gem scan error:", err));
+    runEarly100xScanOnce().catch((err) => console.error("[server] initial early 100x scan error:", err));
   });
 });
 
@@ -137,6 +141,46 @@ setInterval(async () => {
     discoveryInFlight = false;
   }
 }, DISCOVERY_INTERVAL_MINUTES * 60 * 1000);
+
+// ---------- In-process early 100x potential gem scheduler ----------
+// Scans for fresh micro-caps (FDV < $1.5M, age < 48h, buy ratio > 55%) with high 100x runway
+const EARLY_100X_INTERVAL_MINUTES = Number(process.env.EARLY_100X_INTERVAL_MINUTES ?? 10);
+let early100xInFlight = false;
+
+setInterval(async () => {
+  if (early100xInFlight) return;
+  early100xInFlight = true;
+  try {
+    const alerted = await runEarly100xScanOnce();
+    if (alerted > 0) {
+      console.log(`[server] early 100x gem scan alerted ${alerted} micro-cap token(s)`);
+    }
+  } catch (err) {
+    console.error("[server] scheduled early 100x gem scan failed:", err);
+  } finally {
+    early100xInFlight = false;
+  }
+}, EARLY_100X_INTERVAL_MINUTES * 60 * 1000);
+
+// ---------- In-process solid gem scanner scheduler ----------
+// Scans for clean, non-rug pull solid tokens (authorities renounced, healthy liq, safe holders)
+const SOLID_GEM_INTERVAL_MINUTES = Number(process.env.SOLID_GEM_INTERVAL_MINUTES ?? 8);
+let solidGemInFlight = false;
+
+setInterval(async () => {
+  if (solidGemInFlight) return;
+  solidGemInFlight = true;
+  try {
+    const alerted = await runSolidGemScanOnce();
+    if (alerted > 0) {
+      console.log(`[server] solid gem scan alerted ${alerted} verified non-rug token(s)`);
+    }
+  } catch (err) {
+    console.error("[server] scheduled solid gem scan failed:", err);
+  } finally {
+    solidGemInFlight = false;
+  }
+}, SOLID_GEM_INTERVAL_MINUTES * 60 * 1000);
 
 // ---------- In-process research scheduler (meme coins, NFTs) ----------
 // Separate from wallet-pattern discovery above — different data sources
