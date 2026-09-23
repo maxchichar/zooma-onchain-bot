@@ -2,28 +2,36 @@
  * EARLY 100X POTENTIAL GEM SCANNER:
  * Specifically targets early-stage, low-cap Solana tokens with high breakout velocity
  * and verified safety fundamentals for maximum upside potential.
+ * Strictly limited to fresh tokens under 48 hours old.
  *
  * 100x Potential Criteria:
- * 1. Early Stage: Age < 48 hours (fresh launch / breakout stage)
- * 2. Low Entry Market Cap: FDV between $25,000 and $1,500,000 (huge runway for 10x-100x)
- * 3. High Volume Velocity: Volume >= 1.5x Liquidity and buy txns > 60%
+ * 1. Fresh Entry: Age <= 48 hours (fresh launch / early breakout stage)
+ * 2. Low Entry Market Cap: FDV between $20,000 and $2,000,000 (huge runway for 10x-100x)
+ * 3. High Volume Velocity: Volume >= $10,000 and healthy buy pressure
  * 4. Solid Safety: Mint Authority Renounced, Freeze Authority Renounced
- * 5. Safe Distribution: Top 1 holder <= 15% of supply sample
+ * 5. Safe Distribution: Top 1 holder <= 20% of supply sample
  * 6. Clean Deployer History: No dumped/abandoned prior tokens
  * 7. Fast Execution: 1-tap sniper links ready for millisecond entry
  */
 import { supabase } from "./supabase.js";
 import { sendTelegramPhoto } from "./telegram.js";
-import { fetchLatestBoostedSolanaTokens, fetchLatestSolanaTokenProfiles, fetchTokenPairs, getTokenImageUrl, DexScreenerPair } from "./researchSources.js";
+import {
+  fetchLatestBoostedSolanaTokens,
+  fetchLatestSolanaTokenProfiles,
+  fetchFreshTrendingSolanaPairs,
+  fetchTokenPairs,
+  getTokenImageUrl,
+  DexScreenerPair,
+} from "./researchSources.js";
 import { evaluateTokenRugRisk, RugRiskAssessment } from "./rugRisk.js";
 import { getTopHolderConcentration } from "./solanaRpc.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { openPaperTrade } from "./paperTrading.js";
 
 const EARLY_100X_COOLDOWN_HOURS = Number(process.env.EARLY_100X_COOLDOWN_HOURS ?? 6);
-const MIN_EARLY_LIQUIDITY_USD = Number(process.env.MIN_EARLY_LIQUIDITY_USD ?? 8000);
-const MAX_EARLY_FDV_USD = Number(process.env.MAX_EARLY_FDV_USD ?? 1500000); // Under $1.5M FDV for 100x runway
-const MIN_EARLY_VOLUME_USD = Number(process.env.MIN_EARLY_VOLUME_USD ?? 12000);
+const MIN_EARLY_LIQUIDITY_USD = Number(process.env.MIN_EARLY_LIQUIDITY_USD ?? 6000);
+const MAX_EARLY_FDV_USD = Number(process.env.MAX_EARLY_FDV_USD ?? 2000000); // Under $2.0M FDV for 100x runway
+const MIN_EARLY_VOLUME_USD = Number(process.env.MIN_EARLY_VOLUME_USD ?? 10000);
 const MAX_EARLY_AGE_HOURS = Number(process.env.MAX_EARLY_AGE_HOURS ?? 48);
 
 export interface Early100xCandidate {
@@ -61,11 +69,17 @@ async function isInCooldown(tokenMint: string): Promise<boolean> {
   return (data?.length ?? 0) > 0;
 }
 
-export async function evaluate100xCandidate(tokenAddress: string): Promise<Early100xCandidate | null> {
-  const pairs = await fetchTokenPairs(tokenAddress);
-  if (pairs.length === 0) return null;
+export async function evaluate100xCandidate(
+  tokenAddress: string,
+  preloadedPair?: DexScreenerPair
+): Promise<Early100xCandidate | null> {
+  let pair = preloadedPair;
+  if (!pair) {
+    const pairs = await fetchTokenPairs(tokenAddress);
+    if (pairs.length === 0) return null;
+    pair = pairs.reduce((best, p) => ((p.liquidity?.usd ?? 0) > (best.liquidity?.usd ?? 0) ? p : best), pairs[0]);
+  }
 
-  const pair = pairs.reduce((best, p) => ((p.liquidity?.usd ?? 0) > (best.liquidity?.usd ?? 0) ? p : best), pairs[0]);
   const liquidityUsd = pair.liquidity?.usd ?? 0;
   const volume24hUsd = pair.volume?.h24 ?? 0;
   const fdv = pair.fdv ?? (pair.marketCap ?? 0);
@@ -82,7 +96,7 @@ export async function evaluate100xCandidate(tokenAddress: string): Promise<Early
 
   const ageHours = pair.pairCreatedAt ? (Date.now() - pair.pairCreatedAt) / 3_600_000 : 0;
   if (ageHours > MAX_EARLY_AGE_HOURS) {
-    return null; // Too mature for early breakout entry
+    return null; // Too mature for early breakout entry (must be <= 48 hours)
   }
 
   // Check buy/sell ratio
@@ -91,13 +105,13 @@ export async function evaluate100xCandidate(tokenAddress: string): Promise<Early
     const totalTx = pair.txns.h24.buys + pair.txns.h24.sells;
     if (totalTx > 0) {
       buyRatioPct = (pair.txns.h24.buys / totalTx) * 100;
-      if (buyRatioPct < 55) return null; // Reject if sellers dominate
+      if (buyRatioPct < 50) return null; // Reject if heavy dumping
     }
   }
 
   const topHolderFraction = await getTopHolderConcentration(tokenAddress);
   const topHolderPct = topHolderFraction !== null ? topHolderFraction * 100 : null;
-  if (topHolderPct !== null && topHolderPct > 18.0) {
+  if (topHolderPct !== null && topHolderPct > 20.0) {
     return null; // Reject heavy insider concentration
   }
 
@@ -208,17 +222,30 @@ export async function fireEarly100xAlert(gem: Early100xCandidate): Promise<void>
 }
 
 export async function scanEarly100xGems(limit: number = 5): Promise<Early100xCandidate[]> {
-  const [boosted, profiles] = await Promise.all([
+  const [freshPairs, boosted, profiles] = await Promise.all([
+    fetchFreshTrendingSolanaPairs().catch(() => []),
     fetchLatestBoostedSolanaTokens().catch(() => []),
     fetchLatestSolanaTokenProfiles().catch(() => []),
   ]);
 
-  const candidates = [...new Set([...boosted, ...profiles].map((t) => t.tokenAddress))].slice(0, 30);
+  const pairMap = new Map<string, DexScreenerPair>();
+  for (const p of freshPairs) {
+    if (p.baseToken?.address) pairMap.set(p.baseToken.address, p);
+  }
+
+  const allAddresses = [
+    ...freshPairs.map((p) => p.baseToken.address),
+    ...boosted.map((t) => t.tokenAddress),
+    ...profiles.map((t) => t.tokenAddress),
+  ];
+
+  const uniqueAddresses = [...new Set(allAddresses)].slice(0, 35);
   const gems: Early100xCandidate[] = [];
 
-  for (const address of candidates) {
+  for (const address of uniqueAddresses) {
     try {
-      const result = await evaluate100xCandidate(address);
+      const preloaded = pairMap.get(address);
+      const result = await evaluate100xCandidate(address, preloaded);
       if (result) {
         gems.push(result);
         if (gems.length >= limit) break;

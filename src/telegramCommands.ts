@@ -23,6 +23,18 @@ import {
 
 const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const MAX_CAPACITY = Number(process.env.MAX_TRACKED_WALLETS ?? 5000);
+const ZOOMA_BANNER_IMAGE = process.env.ZOOMA_BANNER_URL ?? "assets/zooma_banner.jpg";
+
+const HELP_BUTTONS = [
+  [
+    { text: "⚡ Photon Terminal", url: "https://photon-sol.tinyastro.io" },
+    { text: "🐂 BullX Terminal", url: "https://neo.bullx.io" },
+  ],
+  [
+    { text: "📊 GMGN AI", url: "https://gmgn.ai/sol" },
+    { text: "📈 DexScreener", url: "https://dexscreener.com/solana" },
+  ],
+];
 
 interface TelegramUpdate {
   message?: {
@@ -32,9 +44,10 @@ interface TelegramUpdate {
 }
 
 const HELP_TEXT =
-  `🤖 *Onchain Intelligence Bot | Command Center*\n\n` +
+  `🤖 *ZOOMA Onchain Analysis Bot | Command Center*\n` +
+  `_Track. Analyze. Spot Alpha._\n\n` +
   `*🚀 100x Potential & Solid Gems:*\n` +
-  `• \`/100x\` or \`/early\` : Scan fresh micro-cap gems with high breakout runway\n` +
+  `• \`/100x\` or \`/early\` : Scan fresh micro-cap gems with 100x breakout runway\n` +
   `• \`/solid\` or \`/gems\` : Scan & list verified non-rug pull solid tokens\n` +
   `• \`/scan <token CA>\` : Complete rug check, photo, liquidity & fast trade links\n` +
   `• \`/trending\` : Live trending Solana tokens with sniper buttons\n\n` +
@@ -437,13 +450,8 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   try {
     switch (command.split("@")[0]) {
       case "/start":
-        await sendTelegramMessageTo(
-          chatId,
-          `👋 Onchain Intelligence Bot online.\nReal-time Helius tracking active. Send /help to view all commands.`
-        );
-        break;
       case "/help":
-        await sendTelegramMessageTo(chatId, HELP_TEXT);
+        await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, HELP_TEXT, HELP_BUTTONS);
         break;
       case "/watch":
         await handleWatch(chatId, args[0]);

@@ -1,3 +1,6 @@
+import fs from "fs";
+import path from "path";
+
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const DEFAULT_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -34,7 +37,7 @@ async function rawSend(chatId: string, text: string, buttons?: TelegramButton[][
   }
 }
 
-async function rawSendPhoto(chatId: string, photoUrl: string, captionText: string, buttons?: TelegramButton[][]): Promise<void> {
+async function rawSendPhoto(chatId: string, photoSource: string, captionText: string, buttons?: TelegramButton[][]): Promise<void> {
   if (!BOT_TOKEN) {
     console.warn("[telegram] TELEGRAM_BOT_TOKEN not set — logging instead of sending:\n", captionText);
     return;
@@ -48,17 +51,36 @@ async function rawSendPhoto(chatId: string, photoUrl: string, captionText: strin
   const caption = captionText.length > 1024 ? captionText.slice(0, 1020) + "..." : captionText;
 
   try {
-    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        photo: photoUrl,
-        caption: caption,
-        parse_mode: "Markdown",
-        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-      }),
-    });
+    let res: Response;
+    if (fs.existsSync(photoSource)) {
+      const fileBuffer = fs.readFileSync(photoSource);
+      const filename = path.basename(photoSource);
+      const formData = new FormData();
+      formData.append("chat_id", chatId);
+      formData.append("photo", new Blob([fileBuffer], { type: "image/jpeg" }), filename);
+      formData.append("caption", caption);
+      formData.append("parse_mode", "Markdown");
+      if (replyMarkup) {
+        formData.append("reply_markup", JSON.stringify(replyMarkup));
+      }
+
+      res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+        method: "POST",
+        body: formData,
+      });
+    } else {
+      res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          photo: photoSource,
+          caption: caption,
+          parse_mode: "Markdown",
+          ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        }),
+      });
+    }
 
     if (!res.ok) {
       console.warn(`[telegram] sendPhoto returned ${res.status}, falling back to sendMessage`);

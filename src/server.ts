@@ -13,6 +13,7 @@ import { HeliusEnhancedTx } from "./types.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" })); // webhook batches can be sizeable
+app.use("/assets", express.static("assets"));
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const WEBHOOK_SECRET = process.env.HELIUS_WEBHOOK_SECRET;
@@ -123,7 +124,7 @@ app.listen(PORT, () => {
 // running this frequently is safe — it just becomes a no-op once you hit
 // the cap you've set, rather than something that needs separate throttling
 // here.
-const DISCOVERY_INTERVAL_MINUTES = Number(process.env.DISCOVERY_INTERVAL_MINUTES ?? 5);
+const DISCOVERY_INTERVAL_MINUTES = Number(process.env.DISCOVERY_INTERVAL_MINUTES ?? 3);
 let discoveryInFlight = false;
 
 setInterval(async () => {
@@ -143,8 +144,8 @@ setInterval(async () => {
 }, DISCOVERY_INTERVAL_MINUTES * 60 * 1000);
 
 // ---------- In-process early 100x potential gem scheduler ----------
-// Scans for fresh micro-caps (FDV < $1.5M, age < 48h, buy ratio > 55%) with high 100x runway
-const EARLY_100X_INTERVAL_MINUTES = Number(process.env.EARLY_100X_INTERVAL_MINUTES ?? 10);
+// Scans for fresh micro-caps (FDV < $2.0M, age <= 48h, buy ratio > 50%) with high 100x runway
+const EARLY_100X_INTERVAL_MINUTES = Number(process.env.EARLY_100X_INTERVAL_MINUTES ?? 4);
 let early100xInFlight = false;
 
 setInterval(async () => {
@@ -163,8 +164,8 @@ setInterval(async () => {
 }, EARLY_100X_INTERVAL_MINUTES * 60 * 1000);
 
 // ---------- In-process solid gem scanner scheduler ----------
-// Scans for clean, non-rug pull solid tokens (authorities renounced, healthy liq, safe holders)
-const SOLID_GEM_INTERVAL_MINUTES = Number(process.env.SOLID_GEM_INTERVAL_MINUTES ?? 8);
+// Scans for clean, non-rug pull solid tokens (authorities renounced, healthy liq, safe holders, age <= 48h)
+const SOLID_GEM_INTERVAL_MINUTES = Number(process.env.SOLID_GEM_INTERVAL_MINUTES ?? 4);
 let solidGemInFlight = false;
 
 setInterval(async () => {

@@ -1,28 +1,38 @@
 /**
  * SOLID GEMS ENGINE:
  * Identifies and alerts high-quality, verified non-rug pull Solana tokens.
+ * Strictly limited to fresh, active tokens under 48 hours old.
  *
  * Strict Solid Gem Criteria:
- * 1. Mint Authority: Renounced (No unlimited supply inflation)
- * 2. Freeze Authority: Renounced (No blacklist / honeypot freezes)
- * 3. Liquidity Depth: >= $10,000 USD (Sufficient exit liquidity)
- * 4. 24h Volume: >= $15,000 USD (Active market interest)
- * 5. Holder Concentration: Top 1 holder <= 20% of top 20 sample
- * 6. Clean Deployer: No serial abandoned token history
- * 7. Overall Rug Risk Score: LOW (score <= 15)
+ * 1. Fresh Entry: Age <= 48 hours (no stale or dead tokens)
+ * 2. Mint Authority: Renounced (No unlimited supply inflation)
+ * 3. Freeze Authority: Renounced (No blacklist / honeypot freezes)
+ * 4. Liquidity Depth: >= $8,000 USD (Sufficient exit liquidity)
+ * 5. 24h Volume: >= $10,000 USD (Active market interest)
+ * 6. Holder Concentration: Top 1 holder <= 20% of top 20 sample
+ * 7. Clean Deployer: No serial abandoned token history
+ * 8. Overall Rug Risk Score: LOW (score <= 15)
  */
 import { supabase } from "./supabase.js";
 import { sendTelegramPhoto } from "./telegram.js";
-import { fetchLatestBoostedSolanaTokens, fetchLatestSolanaTokenProfiles, fetchTokenPairs, getTokenImageUrl, DexScreenerPair } from "./researchSources.js";
+import {
+  fetchLatestBoostedSolanaTokens,
+  fetchLatestSolanaTokenProfiles,
+  fetchFreshTrendingSolanaPairs,
+  fetchTokenPairs,
+  getTokenImageUrl,
+  DexScreenerPair,
+} from "./researchSources.js";
 import { evaluateTokenRugRisk, RugRiskAssessment } from "./rugRisk.js";
 import { getTopHolderConcentration } from "./solanaRpc.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { openPaperTrade } from "./paperTrading.js";
 
-const SOLID_GEM_COOLDOWN_HOURS = Number(process.env.SOLID_GEM_COOLDOWN_HOURS ?? 8);
-const MIN_SOLID_LIQUIDITY_USD = Number(process.env.MIN_SOLID_LIQUIDITY_USD ?? 10000);
-const MIN_SOLID_VOLUME_24H_USD = Number(process.env.MIN_SOLID_VOLUME_24H_USD ?? 15000);
+const SOLID_GEM_COOLDOWN_HOURS = Number(process.env.SOLID_GEM_COOLDOWN_HOURS ?? 6);
+const MIN_SOLID_LIQUIDITY_USD = Number(process.env.MIN_SOLID_LIQUIDITY_USD ?? 8000);
+const MIN_SOLID_VOLUME_24H_USD = Number(process.env.MIN_SOLID_VOLUME_24H_USD ?? 10000);
 const MAX_SOLID_TOP_HOLDER_PCT = Number(process.env.MAX_SOLID_TOP_HOLDER_PCT ?? 20.0);
+const MAX_SOLID_AGE_HOURS = Number(process.env.MAX_SOLID_AGE_HOURS ?? 48.0);
 
 export interface SolidGemCandidate {
   tokenAddress: string;
@@ -60,16 +70,27 @@ async function isInCooldown(tokenMint: string): Promise<boolean> {
 /**
  * Evaluates a single token candidate against strict non-rug solid gem rules.
  */
-export async function evaluateSolidCandidate(tokenAddress: string): Promise<SolidGemCandidate | null> {
-  const pairs = await fetchTokenPairs(tokenAddress);
-  if (pairs.length === 0) return null;
+export async function evaluateSolidCandidate(
+  tokenAddress: string,
+  preloadedPair?: DexScreenerPair
+): Promise<SolidGemCandidate | null> {
+  let pair = preloadedPair;
+  if (!pair) {
+    const pairs = await fetchTokenPairs(tokenAddress);
+    if (pairs.length === 0) return null;
+    pair = pairs.reduce((best, p) => ((p.liquidity?.usd ?? 0) > (best.liquidity?.usd ?? 0) ? p : best), pairs[0]);
+  }
 
-  const pair = pairs.reduce((best, p) => ((p.liquidity?.usd ?? 0) > (best.liquidity?.usd ?? 0) ? p : best), pairs[0]);
   const liquidityUsd = pair.liquidity?.usd ?? 0;
   const volume24hUsd = pair.volume?.h24 ?? 0;
 
   if (liquidityUsd < MIN_SOLID_LIQUIDITY_USD || volume24hUsd < MIN_SOLID_VOLUME_24H_USD) {
     return null;
+  }
+
+  const ageHours = pair.pairCreatedAt ? (Date.now() - pair.pairCreatedAt) / 3_600_000 : 0;
+  if (ageHours > MAX_SOLID_AGE_HOURS) {
+    return null; // Reject tokens older than 48 hours
   }
 
   const topHolderFraction = await getTopHolderConcentration(tokenAddress);
@@ -99,8 +120,6 @@ export async function evaluateSolidCandidate(tokenAddress: string): Promise<Soli
   if (rugAssessment.deployerHistory && rugAssessment.deployerHistory.likelyAbandonedCount > 0) {
     return null;
   }
-
-  const ageHours = pair.pairCreatedAt ? (Date.now() - pair.pairCreatedAt) / 3_600_000 : 0;
 
   return {
     tokenAddress,
@@ -157,7 +176,7 @@ export async function fireSolidGemAlert(gem: SolidGemCandidate): Promise<void> {
       signal_id: signal.id,
       source: "solid_gem_audit",
       reference: gem.tokenAddress,
-      note: `Authorities renounced, liq $${Math.round(gem.liquidityUsd).toLocaleString()}, vol $${Math.round(gem.volume24hUsd).toLocaleString()}`,
+      note: `Authorities renounced, liq $${Math.round(gem.liquidityUsd).toLocaleString()}, vol $${Math.round(gem.volume24hUsd).toLocaleString()}, age ${gem.ageHours}h`,
     },
   ]);
 
@@ -172,7 +191,7 @@ export async function fireSolidGemAlert(gem: SolidGemCandidate): Promise<void> {
     `• Price: *$${gem.priceUsd}* | FDV: *$${Math.round(gem.fdv).toLocaleString()}*\n` +
     `• Liquidity: *$${Math.round(gem.liquidityUsd).toLocaleString()}* (Deep pool)\n` +
     `• 24h Volume: *$${Math.round(gem.volume24hUsd).toLocaleString()}*\n` +
-    `• DEX: *${gem.dexId}* | Age: *${gem.ageHours}h*\n\n` +
+    `• Age: *${gem.ageHours} hours old* | DEX: *${gem.dexId}*\n\n` +
     `🛡️ *Non-Rug Verification & Safety Checks:*\n` +
     `• Mint Authority: ✅ Renounced (No printing risk)\n` +
     `• Freeze Authority: ✅ Renounced (Cannot blacklist/freeze)\n` +
@@ -191,20 +210,33 @@ export async function fireSolidGemAlert(gem: SolidGemCandidate): Promise<void> {
 }
 
 /**
- * Scans live candidate pools and returns all solid non-rug tokens.
+ * Scans live candidate pools across Raydium & DexScreener and returns all fresh solid non-rug tokens.
  */
 export async function scanSolidGems(limit: number = 8): Promise<SolidGemCandidate[]> {
-  const [boosted, profiles] = await Promise.all([
+  const [freshPairs, boosted, profiles] = await Promise.all([
+    fetchFreshTrendingSolanaPairs().catch(() => []),
     fetchLatestBoostedSolanaTokens().catch(() => []),
     fetchLatestSolanaTokenProfiles().catch(() => []),
   ]);
 
-  const candidateAddresses = [...new Set([...boosted, ...profiles].map((t) => t.tokenAddress))].slice(0, 25);
+  const pairMap = new Map<string, DexScreenerPair>();
+  for (const p of freshPairs) {
+    if (p.baseToken?.address) pairMap.set(p.baseToken.address, p);
+  }
+
+  const allAddresses = [
+    ...freshPairs.map((p) => p.baseToken.address),
+    ...boosted.map((t) => t.tokenAddress),
+    ...profiles.map((t) => t.tokenAddress),
+  ];
+
+  const uniqueAddresses = [...new Set(allAddresses)].slice(0, 35);
   const solidGems: SolidGemCandidate[] = [];
 
-  for (const address of candidateAddresses) {
+  for (const address of uniqueAddresses) {
     try {
-      const result = await evaluateSolidCandidate(address);
+      const preloaded = pairMap.get(address);
+      const result = await evaluateSolidCandidate(address, preloaded);
       if (result) {
         solidGems.push(result);
         if (solidGems.length >= limit) break;

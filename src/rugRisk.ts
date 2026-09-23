@@ -36,7 +36,7 @@ import { fetchTokenPairs } from "./researchSources.js";
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HELIUS_BASE = "https://api.helius.xyz/v0";
-const DEPLOYER_LOOKBACK_PAGES = Number(process.env.RUG_CHECK_DEPLOYER_LOOKBACK_PAGES ?? 5);
+const DEPLOYER_LOOKBACK_PAGES = Number(process.env.RUG_CHECK_DEPLOYER_LOOKBACK_PAGES ?? 2);
 const DEPLOYER_MIN_INITIAL_MINT_AMOUNT = Number(process.env.RUG_CHECK_MIN_INITIAL_MINT_AMOUNT ?? 1_000_000);
 const ABANDONED_LIQUIDITY_USD_THRESHOLD = Number(process.env.RUG_CHECK_ABANDONED_LIQUIDITY_USD ?? 500);
 
@@ -82,20 +82,15 @@ async function fetchAddressTransactions(address: string, maxPages: number, direc
     url.searchParams.set("limit", "100");
     if (before) url.searchParams.set("before", before);
 
-    const res = await fetch(url.toString());
-    if (!res.ok) break;
-    const batch = (await res.json()) as HeliusTx[];
+    const res = await fetch(url.toString(), { signal: AbortSignal.timeout(3000) }).catch(() => null);
+    if (!res || !res.ok) break;
+    const batch = (await res.json().catch(() => [])) as HeliusTx[];
     if (!batch.length) break;
 
     all.push(...batch);
     before = batch[batch.length - 1].signature;
-    await new Promise((r) => setTimeout(r, 150)); // free-tier courtesy delay
   }
 
-  // Helius returns newest-first. "oldest" direction just means the caller
-  // wants us to have paged as far back as maxPages allows before reading
-  // the tail of the array — we don't reverse anything, we just document
-  // which end of `all` the caller should look at.
   void direction;
   return all;
 }
@@ -110,52 +105,54 @@ export interface DeployerHistory {
 /**
  * Best-effort. Returns null if Helius isn't configured, the mint has no
  * discoverable transaction history within the lookback, or no deployer
- * could be identified — all normal, expected outcomes, not errors.
+ * could be identified.
  */
 export async function checkDeployerHistory(mint: string): Promise<DeployerHistory | null> {
   if (!HELIUS_API_KEY) return null;
 
-  // Approximate the deployer as the fee payer of the oldest transaction
-  // we can find within the capped lookback (see file header caveat).
-  const mintTxs = await fetchAddressTransactions(mint, DEPLOYER_LOOKBACK_PAGES, "oldest");
-  if (mintTxs.length === 0) return null;
-  const deployer = mintTxs[mintTxs.length - 1]?.feePayer;
-  if (!deployer) return null;
+  try {
+    const mintTxs = await fetchAddressTransactions(mint, DEPLOYER_LOOKBACK_PAGES, "oldest");
+    if (mintTxs.length === 0) return null;
+    const deployer = mintTxs[mintTxs.length - 1]?.feePayer;
+    if (!deployer) return null;
 
-  // Now look at the deployer's own transaction history for other tokens
-  // it likely launched (large initial mints received).
-  const deployerTxs = await fetchAddressTransactions(deployer, DEPLOYER_LOOKBACK_PAGES, "newest");
-  const otherMints = new Map<string, number>(); // mint -> largest single inbound amount seen
+    const deployerTxs = await fetchAddressTransactions(deployer, DEPLOYER_LOOKBACK_PAGES, "newest");
+    const otherMints = new Map<string, number>();
 
-  for (const tx of deployerTxs) {
-    for (const t of tx.tokenTransfers ?? []) {
-      if (t.toUserAccount !== deployer || t.mint === mint) continue;
-      if (t.tokenAmount < DEPLOYER_MIN_INITIAL_MINT_AMOUNT) continue;
-      const existing = otherMints.get(t.mint) ?? 0;
-      otherMints.set(t.mint, Math.max(existing, t.tokenAmount));
-    }
-  }
-
-  const otherTokens = [...otherMints.keys()];
-  let likelyAbandonedCount = 0;
-  const abandonedExamples: string[] = [];
-
-  for (const otherMint of otherTokens.slice(0, 15)) {
-    // Cap how many we check to keep this bounded — a serial deployer with
-    // dozens of tokens will still get flagged from the first 15.
-    try {
-      const pairs = await fetchTokenPairs(otherMint);
-      const bestLiquidity = pairs.reduce((max, p) => Math.max(max, p.liquidity?.usd ?? 0), 0);
-      if (bestLiquidity < ABANDONED_LIQUIDITY_USD_THRESHOLD) {
-        likelyAbandonedCount++;
-        if (abandonedExamples.length < 3) abandonedExamples.push(otherMint);
+    for (const tx of deployerTxs) {
+      for (const t of tx.tokenTransfers ?? []) {
+        if (t.toUserAccount !== deployer || t.mint === mint) continue;
+        if (t.tokenAmount < DEPLOYER_MIN_INITIAL_MINT_AMOUNT) continue;
+        const existing = otherMints.get(t.mint) ?? 0;
+        otherMints.set(t.mint, Math.max(existing, t.tokenAmount));
       }
-    } catch {
-      // Unpriceable — skip rather than guess.
     }
-  }
 
-  return { deployer, otherTokensFound: otherTokens.length, likelyAbandonedCount, abandonedExamples };
+    const otherTokens = [...otherMints.keys()];
+    let likelyAbandonedCount = 0;
+    const abandonedExamples: string[] = [];
+
+    // Parallel check of top 4 other tokens
+    const sample = otherTokens.slice(0, 4);
+    await Promise.all(
+      sample.map(async (otherMint) => {
+        try {
+          const pairs = await fetchTokenPairs(otherMint);
+          const bestLiquidity = pairs.reduce((max, p) => Math.max(max, p.liquidity?.usd ?? 0), 0);
+          if (bestLiquidity < ABANDONED_LIQUIDITY_USD_THRESHOLD) {
+            likelyAbandonedCount++;
+            if (abandonedExamples.length < 3) abandonedExamples.push(otherMint);
+          }
+        } catch {
+          // Skip unpriceable
+        }
+      })
+    );
+
+    return { deployer, otherTokensFound: otherTokens.length, likelyAbandonedCount, abandonedExamples };
+  } catch {
+    return null;
+  }
 }
 
 export interface RugRiskAssessment {

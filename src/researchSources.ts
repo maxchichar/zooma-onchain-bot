@@ -92,6 +92,28 @@ export async function fetchLatestSolanaTokenProfiles(): Promise<DexScreenerBoost
   return (data ?? []).filter((t) => t.chainId === "solana");
 }
 
+/** Fresh active Solana pairs from Raydium and DEX search. */
+export async function fetchFreshTrendingSolanaPairs(): Promise<DexScreenerPair[]> {
+  const [raydiumRes, solanaRes] = await Promise.all([
+    safeFetchJson<{ pairs: DexScreenerPair[] | null }>(`${DEXSCREENER_BASE}/latest/dex/search?q=raydium`),
+    safeFetchJson<{ pairs: DexScreenerPair[] | null }>(`${DEXSCREENER_BASE}/latest/dex/search?q=solana`),
+  ]);
+
+  const all = [...(raydiumRes?.pairs ?? []), ...(solanaRes?.pairs ?? [])];
+  const solanaOnly = all.filter((p) => p.chainId === "solana" && p.baseToken?.address);
+
+  // Deduplicate by baseToken.address
+  const seen = new Set<string>();
+  const unique: DexScreenerPair[] = [];
+  for (const p of solanaOnly) {
+    if (!seen.has(p.baseToken.address)) {
+      seen.add(p.baseToken.address);
+      unique.push(p);
+    }
+  }
+  return unique;
+}
+
 /** Real market data (liquidity, volume, age) for a token — this is what actually gates a candidate. */
 export async function fetchTokenPairs(tokenAddress: string): Promise<DexScreenerPair[]> {
   const data = await safeFetchJson<{ pairs: DexScreenerPair[] | null }>(
