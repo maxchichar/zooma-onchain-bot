@@ -9,7 +9,7 @@ import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.js";
 import { fetchTokenPairs, fetchCollectionStats, getTokenImageUrl } from "./researchSources.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 
-const POSITION_SIZE = Number(process.env.PAPER_POSITION_SIZE ?? 100); // $100 USD virtual notional
+const POSITION_SIZE = Number(process.env.PAPER_POSITION_SIZE ?? 2); // $2 USD virtual notional per trade
 const STOP_LOSS_PCT = Number(process.env.PAPER_STOP_LOSS_PCT ?? 20); // % below entry
 const TAKE_PROFIT_PCT = Number(process.env.PAPER_TAKE_PROFIT_PCT ?? 50); // % above entry
 const MAX_HOLD_HOURS = Number(process.env.PAPER_MAX_HOLD_HOURS ?? 48);
