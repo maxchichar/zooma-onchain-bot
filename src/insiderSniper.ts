@@ -18,6 +18,7 @@ import { evaluateTokenRugRisk, RugRiskAssessment } from "./rugRisk.js";
 import { getTopHolderConcentration } from "./solanaRpc.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { openPaperTrade } from "./paperTrading.js";
+import { isSniperActive, incrementSniperAlerts } from "./sniperControl.js";
 
 const INSIDER_MAX_AGE_MINUTES = Number(process.env.INSIDER_MAX_AGE_MINUTES ?? 45); // Launch window up to 45 minutes
 const INSIDER_MIN_LIQUIDITY_USD = Number(process.env.INSIDER_MIN_LIQUIDITY_USD ?? 2500);
@@ -209,6 +210,7 @@ export async function fireInsiderSniperAlert(candidate: InsiderCandidate): Promi
     `⚡ *Execute sub-second trade on fastest terminal:*`;
 
   await sendTelegramPhoto(imageUrl, message, getTokenTradingButtons(candidate.tokenAddress));
+  incrementSniperAlerts();
 
   // Automatically open simulated $2 paper trade
   try {
@@ -263,6 +265,10 @@ export async function scanInsiderDrops(limit: number = 5): Promise<InsiderCandid
  * Continuous high-speed background loop executed every 15-20 seconds.
  */
 export async function runInsiderSniperOnce(): Promise<number> {
+  if (!isSniperActive()) {
+    return 0;
+  }
+
   const candidates = await scanInsiderDrops(3);
   let alerted = 0;
 

@@ -5,25 +5,25 @@
  *
  * SOURCES AND WHY THEY'RE THE $0 CHOICE:
  *
- * DexScreener — free, no API key, no auth. Confirmed rate limits: ~300
+ * DexScreener - free, no API key, no auth. Confirmed rate limits: ~300
  * req/min for pair/token data, ~60 req/min for profile/boost endpoints.
  * Used for meme coin discovery (newly boosted/profiled tokens) and for
  * checking a token's real liquidity/volume (boosted != liquid).
  *
- * LunarCrush — free tier exists but is rate-limited and requires an API
+ * LunarCrush - free tier exists but is rate-limited and requires an API
  * key (sign up at lunarcrush.com). This is the X-adjacent data source:
  * it aggregates social activity FROM X/Reddit/YouTube into a derived
  * score (Galaxy Score, social volume) rather than exposing raw posts.
  * Called sparingly (once per research cycle per candidate, not per
- * request) to respect the free tier. Every call is try/caught — a
+ * request) to respect the free tier. Every call is try/caught - a
  * missing or rate-limited LunarCrush read just means a candidate gets
  * evaluated without a social score, not a failed run.
  *
- * Magic Eden — free public reads on the Solana API, no key required
+ * Magic Eden - free public reads on the Solana API, no key required
  * (documented at 120 requests/min). Used for NFT collection discovery.
  * The exact endpoint used here (`/v2/collections` + `/v2/collections/
  * {symbol}/stats`) is the one confirmed in Magic Eden's own API
- * reference (docs.magiceden.io) — there may be a more direct "trending"
+ * reference (docs.magiceden.io) - there may be a more direct "trending"
  * endpoint; worth checking their current docs if you want to cut down
  * the number of calls this makes.
  */
@@ -61,9 +61,62 @@ export interface DexScreenerPair {
   };
 }
 
+const tokenImageCache = new Map<string, string>();
+
 export function getTokenImageUrl(mint: string, pair?: DexScreenerPair): string {
   if (pair?.info?.imageUrl) return pair.info.imageUrl;
+  if (tokenImageCache.has(mint)) return tokenImageCache.get(mint)!;
   return `https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png`;
+}
+
+export async function resolvePumpTokenImageUrl(uri?: string, mint?: string): Promise<string> {
+  if (mint && tokenImageCache.has(mint)) {
+    return tokenImageCache.get(mint)!;
+  }
+
+  if (uri) {
+    try {
+      if (/\.(png|jpe?g|gif|webp)(\?.*)?$/i.test(uri)) {
+        if (mint) tokenImageCache.set(mint, uri);
+        return uri;
+      }
+
+      let fetchUrl = uri;
+      if (fetchUrl.includes("/ipfs/")) {
+        const hash = fetchUrl.split("/ipfs/")[1];
+        fetchUrl = `https://pump.mypinata.cloud/ipfs/${hash}`;
+      } else if (fetchUrl.startsWith("ipfs://")) {
+        const hash = fetchUrl.replace("ipfs://", "");
+        fetchUrl = `https://pump.mypinata.cloud/ipfs/${hash}`;
+      }
+
+      const res = await fetch(fetchUrl, { signal: AbortSignal.timeout(1500) });
+      if (res.ok) {
+        const data = (await res.json()) as any;
+        if (data?.image) {
+          let img = String(data.image);
+          if (img.includes("/ipfs/")) {
+            const hash = img.split("/ipfs/")[1];
+            img = `https://pump.mypinata.cloud/ipfs/${hash}`;
+          } else if (img.startsWith("ipfs://")) {
+            const hash = img.replace("ipfs://", "");
+            img = `https://pump.mypinata.cloud/ipfs/${hash}`;
+          }
+          if (mint) tokenImageCache.set(mint, img);
+          return img;
+        }
+      }
+    } catch {
+      // fallback
+    }
+  }
+
+  if (mint) {
+    const fallback = `https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png`;
+    tokenImageCache.set(mint, fallback);
+    return fallback;
+  }
+  return "assets/zooma_logo.png";
 }
 
 async function safeFetchJson<T>(url: string): Promise<T | null> {
@@ -114,7 +167,7 @@ export async function fetchFreshTrendingSolanaPairs(): Promise<DexScreenerPair[]
   return unique;
 }
 
-/** Real market data (liquidity, volume, age) for a token — this is what actually gates a candidate. */
+/** Real market data (liquidity, volume, age) for a token: this is what actually gates a candidate. */
 export async function fetchTokenPairs(tokenAddress: string): Promise<DexScreenerPair[]> {
   const data = await safeFetchJson<{ pairs: DexScreenerPair[] | null }>(
     `${DEXSCREENER_BASE}/latest/dex/tokens/${tokenAddress}`
@@ -132,7 +185,7 @@ export interface SocialTopicSummary {
 
 /**
  * Best-effort social score for a token symbol. Returns null on any
- * failure (no key, rate limited, unknown topic) — callers must treat a
+ * failure (no key, rate limited, unknown topic): callers must treat a
  * missing social score as normal, not an error.
  */
 export async function fetchSocialScore(symbol: string): Promise<SocialTopicSummary | null> {
@@ -170,10 +223,10 @@ export interface MagicEdenCollectionStats {
   symbol: string;
   floorPrice: number | null; // lamports
   listedCount: number | null;
-  volumeAll: number | null; // lamports, cumulative — used relative to a prior snapshot, not absolute
+  volumeAll: number | null; // lamports, cumulative - used relative to a prior snapshot, not absolute
 }
 
-/** A page of Solana collections. Not sorted by trending — research.ts ranks these itself via stats. */
+/** A page of Solana collections. Not sorted by trending - research.ts ranks these itself via stats. */
 export async function fetchCollectionsPage(offset: number, limit: number): Promise<MagicEdenCollection[]> {
   const data = await safeFetchJson<MagicEdenCollection[]>(
     `${MAGICEDEN_BASE}/collections?offset=${offset}&limit=${limit}`

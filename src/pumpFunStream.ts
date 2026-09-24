@@ -12,6 +12,8 @@ import { getTokenTradingButtons } from "./tradeLinks.js";
 import { openPaperTrade, isPaperTradingActive, isPaperWalletFunded } from "./paperTrading.js";
 import { classifyPumpDrop } from "./jev.js";
 import { explainPumpDrop } from "./llm.js";
+import { isSniperActive, incrementSniperAlerts } from "./sniperControl.js";
+import { resolvePumpTokenImageUrl } from "./researchSources.js";
 
 const PUMP_WS_URL = "wss://pumpportal.fun/api/data";
 const TOTAL_PUMP_SUPPLY = 1_000_000_000; // 1 Billion tokens standard on Pump.fun
@@ -95,10 +97,11 @@ async function processPumpDrop(data: any): Promise<void> {
     recentPumpDrops.pop();
   }
 
-  // Safety filter:
-  // 1. If dev holds > 18% of supply, dangerous dump risk - skip auto alert
-  // 2. Ensure non-zero effort (dev invested min SOL or token graduated)
-  if (devHoldingPct > 18.0) return;
+  // If sniper engine is paused by user (/stopsniper), keep recent drops updated but suppress alerts
+  if (!isSniperActive()) return;
+
+  // Strict Ultra-Safe filter: dev holding must be strictly < 5.0% supply
+  if (devHoldingPct >= 5.0) return;
   if (!isGraduation && solAmount < MIN_DEV_SOL_BUY) return;
 
   // Zero-latency in-memory check to prevent duplicate alerts (< 0.01ms)
@@ -142,14 +145,10 @@ async function processPumpDrop(data: any): Promise<void> {
   })();
 
   const eventTitle = isGraduation
-    ? `🎓 *[PUMP.FUN RAYDIUM GRADUATION]*`
-    : `💊 *[PUMP.FUN INSTANT DROP | MILLISECOND SNIPER]*`;
+    ? `🎓 *[PUMP.FUN RAYDIUM GRADUATION | 80%+ ULTRA-SAFE]*`
+    : `💊 *[PUMP.FUN ULTRA-SAFE DROP | >=80% AI CONFIDENCE]*`;
 
-  const devStatus = devHoldingPct < 5.0
-    ? `🟢 Ultra-Safe (${devHoldingPct}% supply)`
-    : devHoldingPct < 10.0
-    ? `🟡 Moderate (${devHoldingPct}% supply)`
-    : `⚠️ High (${devHoldingPct}% supply)`;
+  const devStatus = `🟢 Ultra-Safe (${devHoldingPct}% supply)`;
 
   // Instant deterministic heuristic baseline for sub-100ms alert dispatch
   const fastJevBadge = devHoldingPct < 5.0
@@ -190,10 +189,21 @@ async function processPumpDrop(data: any): Promise<void> {
     }).catch(() => null),
   ]).then(([jev, llm]) => ({ jev, llm }));
 
-  const raceResult = await Promise.race([liveAiPromise, timeoutPromise]);
+  const [raceResult, resolvedImageUrl] = await Promise.all([
+    Promise.race([liveAiPromise, timeoutPromise]),
+    resolvePumpTokenImageUrl(drop.uri, drop.mint),
+  ]);
   const jevBadge = raceResult.jev?.badge ?? fastJevBadge;
   const jevConfidence = raceResult.jev?.confidence ?? fastConfidence;
   const llmExplanation = raceResult.llm ?? fastLlmSummary;
+
+  // Strict Quality Filter: Only drops with >= 80% AI confidence and verified organic patterns
+  if (jevConfidence < 0.80) {
+    return;
+  }
+  if (raceResult.jev?.pattern === "dev_heavy_bundle" || raceResult.jev?.pattern === "suspicious_copycat") {
+    return;
+  }
 
   let aiSection = `🤖 *JEV AI Read:* ${jevBadge} (${(jevConfidence * 100).toFixed(0)}% confidence)\n`;
   aiSection += `🧠 *AI Synthesis:* _${llmExplanation}_\n\n`;
@@ -215,34 +225,33 @@ async function processPumpDrop(data: any): Promise<void> {
     `⚡ *Execute sub-second trade on fastest terminal:*`;
 
   const buttons = getTokenTradingButtons(drop.mint);
-  const imageUrl = `https://dd.dexscreener.com/ds-data/tokens/solana/${drop.mint}.png`;
+  const imageUrl = resolvedImageUrl || `https://dd.dexscreener.com/ds-data/tokens/solana/${drop.mint}.png`;
 
   // Dispatch photo alert instantly to Telegram
   try {
     await sendTelegramPhoto(imageUrl, message, buttons);
+    incrementSniperAlerts();
   } catch {
     await sendTelegramMessage(message, buttons);
   }
 
-  // Auto open simulated paper trade if active, wallet funded, and AI confidence is >= 80%
-  if (isPaperTradingActive() && isPaperWalletFunded() && jevConfidence >= 0.80) {
-    if (devHoldingPct <= 10.0 && raceResult.jev?.pattern !== "dev_heavy_bundle") {
-      const solPriceEst = 150;
-      const estPriceUsd = (marketCapSol * solPriceEst) / TOTAL_PUMP_SUPPLY;
-      openPaperTrade(
-        signalId,
-        drop.mint,
-        "pump_fun",
-        estPriceUsd,
-        {
-          baseToken: { address: drop.mint, name: drop.name, symbol: drop.symbol },
-          dexId: isGraduation ? "raydium" : "pumpfun",
-        },
-        jevConfidence
-      ).catch((err) => {
-        console.warn("[pumpFunStream] auto paper trade open error:", (err as Error).message);
-      });
-    }
+  // Auto open simulated paper trade if active and wallet funded
+  if (isPaperTradingActive() && isPaperWalletFunded()) {
+    const solPriceEst = 150;
+    const estPriceUsd = (marketCapSol * solPriceEst) / TOTAL_PUMP_SUPPLY;
+    openPaperTrade(
+      signalId,
+      drop.mint,
+      "pump_fun",
+      estPriceUsd,
+      {
+        baseToken: { address: drop.mint, name: drop.name, symbol: drop.symbol },
+        dexId: isGraduation ? "raydium" : "pumpfun",
+      },
+      jevConfidence
+    ).catch((err) => {
+      console.warn("[pumpFunStream] auto paper trade open error:", (err as Error).message);
+    });
   }
 }
 

@@ -1,4 +1,4 @@
-# Secrets — never commit real values. .env.example (with blank values)
+# Secrets - never commit real values. .env.example (with blank values)
 # is the one that belongs in the repo.
 .env
 .env.*
@@ -10,3 +10,8 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# Runtime state stores
+.paper_wallet_store.json
+.sniper_state.json
+.active_chats.json

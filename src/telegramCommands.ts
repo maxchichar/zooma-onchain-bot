@@ -6,7 +6,7 @@ import { supabase } from "./supabase.js";
 import { sendTelegramMessageTo, sendTelegramPhotoTo, registerActiveChat } from "./telegram.js";
 import { refreshWebhookWithCurrentWallets, runDiscoveryOnce } from "./discover.js";
 import { computeAllWalletScores } from "./walletScoring.js";
-import { fetchTokenPairs, fetchLatestBoostedSolanaTokens, getTokenImageUrl } from "./researchSources.js";
+import { fetchTokenPairs, fetchLatestBoostedSolanaTokens, getTokenImageUrl, resolvePumpTokenImageUrl } from "./researchSources.js";
 import { evaluateTokenRugRisk } from "./rugRisk.js";
 import { getTopHolderConcentration } from "./solanaRpc.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
@@ -42,6 +42,7 @@ import {
   formatWalletDetailText,
   getWalletProfileButtons,
 } from "./walletInspector.js";
+import { isSniperActive, setSniperActive, getSniperState } from "./sniperControl.js";
 
 const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const MAX_CAPACITY = Number(process.env.MAX_TRACKED_WALLETS ?? 5000);
@@ -69,6 +70,9 @@ const HELP_TEXT =
   `🤖 *ZOOMA Onchain Intelligence*\n` +
   `_Automated Solana Breakout Engine & Paper Trader_\n\n` +
   `⚡ *Primary Commands:*\n` +
+  `🎯 \`/sniper [on|off]\` : Control Millisecond Sniper Engine\n` +
+  `🛑 \`/stopsniper\` : Stop Millisecond Drop Alerts\n` +
+  `🟢 \`/startsniper\` : Start / Resume Drop Alerts\n` +
   `💊 \`/pump\` : Live Pump.fun Drops & Graduations\n` +
   `⚡ \`/insider\` : Ultra-Early Launches (10 - 30m old)\n` +
   `💎 \`/gems\` : Live Fresh Gems (< 48h) & 100x Breakouts\n` +
@@ -734,6 +738,87 @@ async function handlePaperTradeCommand(chatId: string, action?: string, amountSt
   }
 }
 
+async function handleStopSniper(chatId: string): Promise<void> {
+  const state = setSniperActive(false);
+  const text =
+    `🛑 *[SNIPER ENGINE STOPPED / PAUSED]*\n\n` +
+    `• Engine Status: 🔴 *PAUSED*\n` +
+    `• Instant Pump.fun Alerts: *HALTED*\n` +
+    `• Insider Launch Scanner: *HALTED*\n` +
+    `• Automated Drop Snipes: *PAUSED*\n` +
+    `• Historical Alerts Dispatched: *${state.totalAlertsDispatched}*\n\n` +
+    `Automated drop alerts and snipes are now paused. You will not receive any instant token alerts until you resume.\n\n` +
+    `⚡ *Controls:*\n` +
+    `• \`/startsniper\` or \`/sniper on\` : Resume millisecond sniper stream\n` +
+    `• \`/pump\` : View manual snapshot of recent drops\n` +
+    `• \`/papertrade\` : Inspect paper trading controls`;
+
+  try {
+    await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, text, HELP_BUTTONS);
+  } catch {
+    await sendTelegramMessageTo(chatId, text, HELP_BUTTONS);
+  }
+}
+
+async function handleStartSniper(chatId: string): Promise<void> {
+  const state = setSniperActive(true);
+  const text =
+    `🟢 *[SNIPER ENGINE ACTIVE & SCANNING]*\n\n` +
+    `• Engine Status: 🟢 *ACTIVE (Millisecond Speed)*\n` +
+    `• Pump.fun WebSocket Feed: *CONNECTED*\n` +
+    `• Detection Speed: *Sub-200ms*\n` +
+    `• Token Images: *Automated IPFS / Pinata extraction*\n` +
+    `• AI Safety Threshold: *>= 80% AI Confidence required*\n` +
+    `• Historical Alerts Dispatched: *${state.totalAlertsDispatched}*\n\n` +
+    `Live drop alerts with token contract addresses, images, and 1-tap sniper buttons are now broadcasting.\n\n` +
+    `⚡ *Controls:*\n` +
+    `• \`/stopsniper\` or \`/sniper off\` : Pause sniper alerts anytime\n` +
+    `• \`/pump\` : Manual snapshot of current drops\n` +
+    `• \`/positions\` : Inspect active positions`;
+
+  try {
+    await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, text, HELP_BUTTONS);
+  } catch {
+    await sendTelegramMessageTo(chatId, text, HELP_BUTTONS);
+  }
+}
+
+async function handleSniperCommand(chatId: string, action?: string): Promise<void> {
+  const norm = action?.toLowerCase();
+  if (norm === "on" || norm === "start" || norm === "resume" || norm === "activate") {
+    await handleStartSniper(chatId);
+    return;
+  }
+  if (norm === "off" || norm === "stop" || norm === "pause") {
+    await handleStopSniper(chatId);
+    return;
+  }
+
+  const state = getSniperState();
+  const statusEmoji = state.enabled ? "🟢" : "🔴";
+  const statusText = state.enabled ? "ACTIVE (Live Millisecond Streaming)" : "PAUSED (Alerts Halted)";
+
+  const text =
+    `🎯 *[ZOOMA SNIPER CONTROL CENTER]*\n\n` +
+    `• Engine Status: ${statusEmoji} *${statusText}*\n` +
+    `• Latency: *< 200ms sub-second WebSocket*\n` +
+    `• Token Visuals: *Real token images via IPFS Gateway*\n` +
+    `• AI Safety Gate: *>= 80% AI Confidence required*\n` +
+    `• Contract Safety: *Renounced mint/freeze + Dev share < 18%*\n` +
+    `• Total Alerts Broadcasted: *${state.totalAlertsDispatched}*\n\n` +
+    `⚡ *Quick Commands:*\n` +
+    `• \`/startsniper\` or \`/sniper on\` : Start millisecond drop alerts\n` +
+    `• \`/stopsniper\` or \`/sniper off\` : Stop millisecond drop alerts\n` +
+    `• \`/pump\` : View recent Pump.fun drops\n` +
+    `• \`/insider\` : View sub-30m insider launches`;
+
+  try {
+    await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, text, HELP_BUTTONS);
+  } catch {
+    await sendTelegramMessageTo(chatId, text, HELP_BUTTONS);
+  }
+}
+
 async function handleAiExplanation(chatId: string): Promise<void> {
   const text =
     `🧠 *[ZOOMA AI & MACHINE LEARNING ARCHITECTURE]*\n\n` +
@@ -796,29 +881,27 @@ async function handleInsider(chatId: string): Promise<void> {
 }
 
 async function handlePumpDrops(chatId: string): Promise<void> {
-  const drops = getRecentPumpDrops(3);
-  if (drops.length === 0) {
+  const allDrops = getRecentPumpDrops(30);
+  const ultraSafeDrops = allDrops.filter((d) => d.devHoldingPct < 5.0).slice(0, 3);
+
+  if (ultraSafeDrops.length === 0) {
     await sendTelegramMessageTo(
       chatId,
-      "💊 *Pump.fun Live Stream Active*\n\n" +
-      "Listening to Pumpportal WebSocket stream in real time. Ultra-early token creations and Raydium graduations will appear here and alert in milliseconds as developers launch them."
+      "💊 *Pump.fun Ultra-Safe Stream Active*\n\n" +
+      "Listening to Pumpportal WebSocket in real time. Only high-conviction drops meeting strict *Ultra-Safe (< 5% dev holding)* and *>= 80% AI confidence* criteria will be alerted."
     );
     return;
   }
 
-  for (let i = 0; i < drops.length; i++) {
-    const drop = drops[i];
-    const devStatus = drop.devHoldingPct < 5.0
-      ? `🟢 Ultra-Safe (${drop.devHoldingPct}% supply)`
-      : drop.devHoldingPct < 10.0
-      ? `🟡 Moderate (${drop.devHoldingPct}% supply)`
-      : `⚠️ High (${drop.devHoldingPct}% supply)`;
+  for (let i = 0; i < ultraSafeDrops.length; i++) {
+    const drop = ultraSafeDrops[i];
+    const devStatus = `🟢 Ultra-Safe (${drop.devHoldingPct}% supply)`;
 
     const eventTitle = drop.isRaydiumGraduation
-      ? `🎓 *[PUMP.FUN RAYDIUM GRADUATION]*`
-      : `💊 *[PUMP.FUN INSTANT DROP | MILLISECOND SNIPER]*`;
+      ? `🎓 *[PUMP.FUN RAYDIUM GRADUATION | 80%+ ULTRA-SAFE]*`
+      : `💊 *[PUMP.FUN ULTRA-SAFE DROP | >=80% AI CONFIDENCE]*`;
 
-    const [jevRead, llmExplanation] = await Promise.all([
+    const [jevRead, llmExplanation, imageUrl] = await Promise.all([
       classifyPumpDrop({
         mint: drop.mint,
         name: drop.name,
@@ -837,7 +920,12 @@ async function handlePumpDrops(chatId: string): Promise<void> {
         marketCapSol: drop.marketCapSol,
         isGraduation: Boolean(drop.isRaydiumGraduation),
       }).catch(() => null),
+      resolvePumpTokenImageUrl(drop.uri, drop.mint),
     ]);
+
+    if (jevRead && jevRead.confidence < 0.80) {
+      continue;
+    }
 
     let aiSection = "";
     if (jevRead) {
@@ -864,7 +952,6 @@ async function handlePumpDrops(chatId: string): Promise<void> {
       `• Liquidity: ✅ On Bonding Curve (${drop.isRaydiumGraduation ? "Graduated to Raydium" : "Pre-migration stage"})\n\n` +
       `⚡ *Execute sub-second trade on fastest terminal:*`;
 
-    const imageUrl = `https://dd.dexscreener.com/ds-data/tokens/solana/${drop.mint}.png`;
     const buttons = getTokenTradingButtons(drop.mint);
 
     try {
@@ -910,13 +997,26 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/inspect":
         await handleInspectWallet(chatId, args[0]);
         break;
+      case "/stopsniper":
+      case "/pausesniper":
+      case "/stopsniping":
+        await handleStopSniper(chatId);
+        break;
+      case "/startsniper":
+      case "/resumesniper":
+      case "/startsniping":
+        await handleStartSniper(chatId);
+        break;
+      case "/sniper":
+      case "/snipers":
+        await handleSniperCommand(chatId, args[0]);
+        break;
       case "/pump":
       case "/pumpfun":
       case "/drops":
         await handlePumpDrops(chatId);
         break;
       case "/insider":
-      case "/snip":
       case "/fresh":
         await handleInsider(chatId);
         break;

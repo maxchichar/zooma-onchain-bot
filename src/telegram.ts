@@ -91,6 +91,32 @@ async function rawSend(chatId: string, text: string, buttons?: TelegramButton[][
   }
 }
 
+const DEFAULT_LOCAL_BANNER = path.resolve(process.cwd(), "assets/zooma_logo.png");
+
+async function sendPhotoViaFormData(
+  chatId: string,
+  buffer: Buffer | Uint8Array,
+  filename: string,
+  caption?: string,
+  replyMarkup?: any
+): Promise<Response> {
+  const formData = new FormData();
+  formData.append("chat_id", chatId);
+  formData.append("photo", new Blob([buffer as any], { type: "image/jpeg" }), filename);
+  if (caption) {
+    formData.append("caption", caption);
+    formData.append("parse_mode", "Markdown");
+  }
+  if (replyMarkup) {
+    formData.append("reply_markup", JSON.stringify(replyMarkup));
+  }
+
+  return fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
 async function rawSendPhoto(chatId: string, photoSource: string, captionText: string, buttons?: TelegramButton[][]): Promise<void> {
   if (!BOT_TOKEN) {
     console.warn("[telegram] TELEGRAM_BOT_TOKEN not set, logging caption:\n", captionText);
@@ -111,27 +137,46 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
   const photoCaption = isCaptionTooLong ? captionText.split("\n")[0] : captionText;
 
   try {
-    let res: Response;
     if (isLocalFile) {
       const fileBuffer = fs.readFileSync(localPath);
       const filename = path.basename(localPath);
-      const formData = new FormData();
-      formData.append("chat_id", chatId);
-      formData.append("photo", new Blob([fileBuffer], { type: "image/jpeg" }), filename);
-      if (photoCaption) {
-        formData.append("caption", photoCaption);
-        formData.append("parse_mode", "Markdown");
+      const res = await sendPhotoViaFormData(
+        chatId,
+        fileBuffer,
+        filename,
+        photoCaption,
+        !isCaptionTooLong ? replyMarkup : undefined
+      );
+      if (res.ok) {
+        if (isCaptionTooLong) await rawSend(chatId, captionText, buttons);
+        return;
       }
-      if (!isCaptionTooLong && replyMarkup) {
-        formData.append("reply_markup", JSON.stringify(replyMarkup));
+    } else {
+      // Remote image URL: fetch binary directly to bypass Telegram CDN fetch errors
+      try {
+        const imgRes = await fetch(photoSource, { signal: AbortSignal.timeout(2500) });
+        if (imgRes.ok) {
+          const arrayBuffer = await imgRes.arrayBuffer();
+          if (arrayBuffer.byteLength > 0) {
+            const res = await sendPhotoViaFormData(
+              chatId,
+              new Uint8Array(arrayBuffer),
+              "token.jpg",
+              photoCaption,
+              !isCaptionTooLong ? replyMarkup : undefined
+            );
+            if (res.ok) {
+              if (isCaptionTooLong) await rawSend(chatId, captionText, buttons);
+              return;
+            }
+          }
+        }
+      } catch {
+        // remote fetch timed out or failed, try direct Telegram URL method
       }
 
-      res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
-        method: "POST",
-        body: formData,
-      });
-    } else {
-      res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+      // Try passing URL directly to Telegram sendPhoto API
+      const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -141,20 +186,42 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
           ...((!isCaptionTooLong && replyMarkup) ? { reply_markup: replyMarkup } : {}),
         }),
       });
+
+      if (res.ok) {
+        if (isCaptionTooLong) await rawSend(chatId, captionText, buttons);
+        return;
+      }
     }
 
-    if (!res.ok) {
-      const errText = await res.text();
-      console.warn(`[telegram] sendPhoto returned ${res.status}: ${errText}, falling back to sendMessage`);
-      await rawSend(chatId, captionText, buttons);
-      return;
+    // High reliability fallback: send official local ZOOMA banner photo
+    if (fs.existsSync(DEFAULT_LOCAL_BANNER)) {
+      const bannerBuffer = fs.readFileSync(DEFAULT_LOCAL_BANNER);
+      const res = await sendPhotoViaFormData(
+        chatId,
+        bannerBuffer,
+        "zooma_logo.png",
+        photoCaption,
+        !isCaptionTooLong ? replyMarkup : undefined
+      );
+      if (res.ok) {
+        if (isCaptionTooLong) await rawSend(chatId, captionText, buttons);
+        return;
+      }
     }
 
-    if (isCaptionTooLong) {
-      await rawSend(chatId, captionText, buttons);
-    }
+    // Final fallback to text message if photo delivery failed completely
+    await rawSend(chatId, captionText, buttons);
   } catch (err) {
-    console.warn("[telegram] sendPhoto error, falling back to sendMessage:", (err as Error).message);
+    console.warn("[telegram] sendPhoto error, attempting local banner fallback:", (err as Error).message);
+    try {
+      if (fs.existsSync(DEFAULT_LOCAL_BANNER)) {
+        const bannerBuffer = fs.readFileSync(DEFAULT_LOCAL_BANNER);
+        const res = await sendPhotoViaFormData(chatId, bannerBuffer, "zooma_logo.png", photoCaption, replyMarkup);
+        if (res.ok) return;
+      }
+    } catch {
+      // ignore
+    }
     await rawSend(chatId, captionText, buttons);
   }
 }
