@@ -3,7 +3,13 @@
  * /scan, /trending, /solid, /gems, /whales, /activity, /traders, /discover, /help.
  */
 import { supabase } from "./supabase.js";
-import { sendTelegramMessageTo, sendTelegramPhotoTo, registerActiveChat } from "./telegram.js";
+import {
+  sendTelegramMessageTo,
+  sendTelegramPhotoTo,
+  registerActiveChat,
+  scheduleVaporization,
+  VAPORIZE_DELAY_SECONDS,
+} from "./telegram.js";
 import { refreshWebhookWithCurrentWallets, runDiscoveryOnce } from "./discover.js";
 import { computeAllWalletScores } from "./walletScoring.js";
 import { fetchTokenPairs, fetchLatestBoostedSolanaTokens, getTokenImageUrl, resolvePumpTokenImageUrl } from "./researchSources.js";
@@ -63,6 +69,7 @@ const HELP_BUTTONS = [
 
 interface TelegramUpdate {
   message?: {
+    message_id?: number;
     chat: { id: number };
     text?: string;
   };
@@ -985,6 +992,13 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
 
   const chatId = String(message.chat.id);
   registerActiveChat(chatId);
+
+  // If a user invoked a slash command starting with "/", vaporize their command message
+  // along with the bot's output after 45 seconds to keep the chat clean like vapor
+  if (message.text.trim().startsWith("/") && message.message_id) {
+    scheduleVaporization(chatId, message.message_id, VAPORIZE_DELAY_SECONDS);
+  }
+
   const [command, ...args] = message.text.trim().split(/\s+/);
 
   try {

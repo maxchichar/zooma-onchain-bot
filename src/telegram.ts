@@ -59,10 +59,12 @@ export function getBroadcastChatIds(): string[] {
   return Array.from(ids);
 }
 
-async function rawSend(chatId: string, text: string, buttons?: TelegramButton[][]): Promise<void> {
+export const VAPORIZE_DELAY_SECONDS = 45;
+
+async function rawSend(chatId: string, text: string, buttons?: TelegramButton[][]): Promise<number | null> {
   if (!BOT_TOKEN) {
     console.warn("[telegram] TELEGRAM_BOT_TOKEN not set, logging message:\n", text);
-    return;
+    return null;
   }
 
   const replyMarkup = buttons
@@ -82,12 +84,17 @@ async function rawSend(chatId: string, text: string, buttons?: TelegramButton[][
       }),
     });
 
-    if (!res.ok) {
+    if (res.ok) {
+      const data = (await res.json()) as any;
+      return data?.result?.message_id ?? null;
+    } else {
       const body = await res.text();
       console.error(`[telegram] send failed to ${chatId}: ${res.status} ${body}`);
+      return null;
     }
   } catch (err) {
     console.error(`[telegram] send error to ${chatId}:`, (err as Error).message);
+    return null;
   }
 }
 
@@ -117,10 +124,11 @@ async function sendPhotoViaFormData(
   });
 }
 
-async function rawSendPhoto(chatId: string, photoSource: string, captionText: string, buttons?: TelegramButton[][]): Promise<void> {
+async function rawSendPhoto(chatId: string, photoSource: string, captionText: string, buttons?: TelegramButton[][]): Promise<number[]> {
+  const sentMessageIds: number[] = [];
   if (!BOT_TOKEN) {
     console.warn("[telegram] TELEGRAM_BOT_TOKEN not set, logging caption:\n", captionText);
-    return;
+    return sentMessageIds;
   }
 
   const replyMarkup = buttons
@@ -136,6 +144,21 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
   const isCaptionTooLong = captionText.length > 1020;
   const photoCaption = isCaptionTooLong ? captionText.split("\n")[0] : captionText;
 
+  const extractMessageId = async (res: Response) => {
+    try {
+      const data = (await res.json()) as any;
+      if (data?.result?.message_id) {
+        sentMessageIds.push(data.result.message_id);
+      }
+    } catch {
+      // non-blocking
+    }
+    if (isCaptionTooLong) {
+      const extraId = await rawSend(chatId, captionText, buttons);
+      if (extraId) sentMessageIds.push(extraId);
+    }
+  };
+
   try {
     if (isLocalFile) {
       const fileBuffer = fs.readFileSync(localPath);
@@ -148,8 +171,8 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
         !isCaptionTooLong ? replyMarkup : undefined
       );
       if (res.ok) {
-        if (isCaptionTooLong) await rawSend(chatId, captionText, buttons);
-        return;
+        await extractMessageId(res);
+        return sentMessageIds;
       }
     } else {
       // Remote image URL: fetch binary directly to bypass Telegram CDN fetch errors
@@ -166,8 +189,8 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
               !isCaptionTooLong ? replyMarkup : undefined
             );
             if (res.ok) {
-              if (isCaptionTooLong) await rawSend(chatId, captionText, buttons);
-              return;
+              await extractMessageId(res);
+              return sentMessageIds;
             }
           }
         }
@@ -188,8 +211,8 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
       });
 
       if (res.ok) {
-        if (isCaptionTooLong) await rawSend(chatId, captionText, buttons);
-        return;
+        await extractMessageId(res);
+        return sentMessageIds;
       }
     }
 
@@ -204,26 +227,71 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
         !isCaptionTooLong ? replyMarkup : undefined
       );
       if (res.ok) {
-        if (isCaptionTooLong) await rawSend(chatId, captionText, buttons);
-        return;
+        await extractMessageId(res);
+        return sentMessageIds;
       }
     }
 
     // Final fallback to text message if photo delivery failed completely
-    await rawSend(chatId, captionText, buttons);
+    const fallbackId = await rawSend(chatId, captionText, buttons);
+    if (fallbackId) sentMessageIds.push(fallbackId);
+    return sentMessageIds;
   } catch (err) {
     console.warn("[telegram] sendPhoto error, attempting local banner fallback:", (err as Error).message);
     try {
       if (fs.existsSync(DEFAULT_LOCAL_BANNER)) {
         const bannerBuffer = fs.readFileSync(DEFAULT_LOCAL_BANNER);
         const res = await sendPhotoViaFormData(chatId, bannerBuffer, "zooma_logo.png", photoCaption, replyMarkup);
-        if (res.ok) return;
+        if (res.ok) {
+          await extractMessageId(res);
+          return sentMessageIds;
+        }
       }
     } catch {
       // ignore
     }
-    await rawSend(chatId, captionText, buttons);
+    const fallbackId = await rawSend(chatId, captionText, buttons);
+    if (fallbackId) sentMessageIds.push(fallbackId);
+    return sentMessageIds;
   }
+}
+
+/**
+ * Deletes a message from Telegram.
+ */
+export async function deleteTelegramMessage(chatId: string, messageId: number): Promise<boolean> {
+  if (!BOT_TOKEN || !messageId) return false;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+      }),
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn(`[telegram] deleteMessage error for msg ${messageId} in chat ${chatId}:`, (err as Error).message);
+    return false;
+  }
+}
+
+/**
+ * Schedules a message to clear like vapor after a specified delay (default 45 seconds).
+ */
+export function scheduleVaporization(chatId: string, messageId: number, seconds: number = VAPORIZE_DELAY_SECONDS): void {
+  if (!messageId || seconds <= 0) return;
+  setTimeout(async () => {
+    try {
+      const ok = await deleteTelegramMessage(chatId, messageId);
+      if (ok) {
+        console.log(`[telegram] vaporized message ${messageId} in chat ${chatId} after ${seconds}s`);
+      }
+    } catch {
+      // non-blocking
+    }
+  }, seconds * 1000);
 }
 
 /**
@@ -252,16 +320,39 @@ export async function sendTelegramPhoto(photoUrl: string, text: string, buttons?
 
 /**
  * Sends to a specific chat when replying to an inbound command.
+ * Automatically clears the output like vapor after 45 seconds.
  */
-export async function sendTelegramMessageTo(chatId: string, text: string, buttons?: TelegramButton[][]): Promise<void> {
+export async function sendTelegramMessageTo(
+  chatId: string,
+  text: string,
+  buttons?: TelegramButton[][],
+  autoDeleteSeconds: number = VAPORIZE_DELAY_SECONDS
+): Promise<number | null> {
   registerActiveChat(chatId);
-  await rawSend(chatId, text, buttons);
+  const msgId = await rawSend(chatId, text, buttons);
+  if (msgId && autoDeleteSeconds > 0) {
+    scheduleVaporization(chatId, msgId, autoDeleteSeconds);
+  }
+  return msgId;
 }
 
 /**
- * Sends a photo message to a specific chat.
+ * Sends a photo message to a specific chat when replying to an inbound command.
+ * Automatically clears the output like vapor after 45 seconds.
  */
-export async function sendTelegramPhotoTo(chatId: string, photoUrl: string, text: string, buttons?: TelegramButton[][]): Promise<void> {
+export async function sendTelegramPhotoTo(
+  chatId: string,
+  photoUrl: string,
+  text: string,
+  buttons?: TelegramButton[][],
+  autoDeleteSeconds: number = VAPORIZE_DELAY_SECONDS
+): Promise<number[]> {
   registerActiveChat(chatId);
-  await rawSendPhoto(chatId, photoUrl, text, buttons);
+  const msgIds = await rawSendPhoto(chatId, photoUrl, text, buttons);
+  if (autoDeleteSeconds > 0) {
+    for (const msgId of msgIds) {
+      scheduleVaporization(chatId, msgId, autoDeleteSeconds);
+    }
+  }
+  return msgIds;
 }
