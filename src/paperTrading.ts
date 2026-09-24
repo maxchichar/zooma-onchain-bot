@@ -20,6 +20,7 @@ import { getTokenTradingButtons } from "./tradeLinks.js";
 import { getRecentPumpDrops, subscribeToTokenTrades, unsubscribeFromTokenTrades } from "./pumpFunStream.js";
 import { extractPatternFeatures, getPatternOptimizationAdvice, recordTradeOutcome } from "./patternLearning.js";
 import { evaluateTokenDumpRisk, isTokenInDumpCooldown, sendDumpShieldAlert, DumpEvent } from "./dumpDetector.js";
+import { calculateFlexibleJevTradeSetup, JevTradeSetup } from "./jev.js";
 
 let paperTradingEnabled = true;
 let currentPositionSize = Number(process.env.PAPER_POSITION_SIZE ?? 2); // $2 USD virtual notional per trade
@@ -79,6 +80,11 @@ export interface StoredTrade {
   peak_price?: number;
   trailing_stop_price?: number | null;
   breakeven_locked?: boolean;
+  jev_risk_tier?: string;
+  jev_stop_loss_pct?: number;
+  jev_take_profit_pct?: number;
+  jev_breakeven_trigger_pct?: number;
+  jev_trailing_floor_pct?: number;
 }
 
 export type OpenTrade = StoredTrade;
@@ -497,13 +503,16 @@ export async function openPaperTrade(
 
   const fallbackPriceUsd = fallbackPrice ? (typeof fallbackPrice === "string" ? parseFloat(fallbackPrice) : fallbackPrice) : undefined;
 
-  let current = await getCurrentPrice(tokenOrSymbol, category);
-  if (!current && fallbackPriceUsd && fallbackPriceUsd > 0) {
+  // Superfast execution path: if verified price is already provided by stream/signal, use it immediately without slow network latency
+  let current: CurrentPrice | null = null;
+  if (fallbackPriceUsd && fallbackPriceUsd > 0) {
     current = {
       price: fallbackPriceUsd,
       quoteCurrency: "usd",
       pair: fallbackPair,
     };
+  } else {
+    current = await getCurrentPrice(tokenOrSymbol, category);
   }
 
   if (!current || !current.price || current.price <= 0) {
@@ -533,13 +542,28 @@ export async function openPaperTrade(
     devHoldingPct: category === "pump_fun" ? 3.0 : 4.0,
   });
 
-  const advice = getPatternOptimizationAdvice(features, currentPositionSize, wallet.availableCash);
-  const effectivePositionSize = advice.recommendedPositionSizeUsd > 0 && advice.recommendedPositionSizeUsd <= wallet.availableCash
-    ? advice.recommendedPositionSizeUsd
-    : currentPositionSize;
+  // JEV Flexible Trade Parameters: dynamic entry sizing & flexible stop-loss
+  const jevSetup = calculateFlexibleJevTradeSetup({
+    tokenMint: tokenOrSymbol,
+    category,
+    aiConfidence,
+    devHoldingPct: features.devStakeTier === "ultra_low" ? 1.5 : (features.devStakeTier === "low" ? 3.5 : 5.5),
+    solAmount: current.pair?.txns?.h24?.buys ? 1.2 : 0.5,
+    marketCapSol: liq / 150,
+    liquidityUsd: liq,
+    volume24hUsd: vol,
+    buyCount: buys,
+    sellCount: sells,
+    isGraduation: dexId === "raydium" && category === "pump_fun",
+    availableCashUsd: wallet.availableCash,
+    basePositionSizeUsd: currentPositionSize,
+  });
 
-  const effectiveTakeProfitPct = advice.takeProfitPct ?? TAKE_PROFIT_PCT;
-  const effectiveStopLossPct = Math.min(5, advice.stopLossPct ?? STOP_LOSS_PCT);
+  const effectivePositionSize = jevSetup.positionSizeUsd;
+  const effectiveTakeProfitPct = jevSetup.takeProfitPct;
+  const effectiveStopLossPct = jevSetup.stopLossPct; // Strictly <= 4.8%, never exceeds 5%
+  const breakevenTriggerPct = jevSetup.breakevenTriggerPct;
+  const trailingFloorPct = jevSetup.trailingFloorPct;
 
   const stopLossPrice = current.price * (1 - effectiveStopLossPct / 100);
   const targetPrice = current.price * (1 + effectiveTakeProfitPct / 100);
@@ -569,10 +593,18 @@ export async function openPaperTrade(
     peak_price: current.price,
     trailing_stop_price: stopLossPrice,
     breakeven_locked: false,
+    jev_risk_tier: jevSetup.riskTier,
+    jev_stop_loss_pct: effectiveStopLossPct,
+    jev_take_profit_pct: effectiveTakeProfitPct,
+    jev_breakeven_trigger_pct: breakevenTriggerPct,
+    jev_trailing_floor_pct: trailingFloorPct,
   };
 
   // Add to active mints set immediately
   activeOpenMints.add(tokenOrSymbol);
+  if (category === "pump_fun") {
+    subscribeToTokenTrades(tokenOrSymbol);
+  }
 
   // Deduct from paper wallet available cash and lock in allocated cash
   wallet.availableCash = Math.max(0, wallet.availableCash - effectivePositionSize);
@@ -615,15 +647,16 @@ export async function openPaperTrade(
     `🎯 *[${tag}]*\n\n` +
     `*${name} ($${symbol})*\n` +
     `• Token CA: \`${tokenOrSymbol}\`\n` +
-    `• Strategy: \`${category}\`\n` +
+    `• JEV Strategy: *${jevSetup.badge}*\n` +
+    `• Entry Execution: *SUPERFAST INSTANT SWEEP*\n` +
     `• Entry Price: *${entryStr} ${current.quoteCurrency.toUpperCase()}*\n` +
-    `• Trade Size: *$${effectivePositionSize.toFixed(2)} USD* (${advice.sizeMultiplier}x Sizing from Paper Wallet)\n` +
+    `• Flexible Entry Size: *$${effectivePositionSize.toFixed(2)} USD* (JEV Dynamic Sizing)\n` +
     `• Paper Wallet Available: *$${wallet.availableCash.toFixed(2)} USD*\n` +
-    `• Learned Pattern: ${advice.badge}\n` +
-    `• Stop-Loss (-${effectiveStopLossPct}%): *${stopStr}*\n` +
+    `• Flexible Stop-Loss (-${effectiveStopLossPct}%): *${stopStr}* (Strict 5% ceiling protected)\n` +
     `• Dynamic Take-Profit (+${effectiveTakeProfitPct}%): *${targetStr}*\n` +
+    `• Breakeven Lock Target: *+${breakevenTriggerPct}%* (Auto-protects capital)\n` +
     `• Max Holding Window: *${MAX_HOLD_HOURS} hours*\n\n` +
-    `_Auto-executing live simulated trade with >= 80% AI confidence & pattern optimization._`;
+    `_JEV Rationale: ${jevSetup.rationale}_\n`;
 
   const buttons = category !== "nft_watch" ? getTokenTradingButtons(tokenOrSymbol) : undefined;
   const imageUrl = category !== "nft_watch" ? getTokenImageUrl(tokenOrSymbol, current.pair) : ZOOMA_BANNER_IMAGE;
@@ -885,9 +918,26 @@ export async function openAutonomousTrade(
     devHoldingPct: 3.5,
   });
 
-  const advice = getPatternOptimizationAdvice(features, positionSize, wallet.availableCash);
-  const effectiveTakeProfitPct = advice.takeProfitPct ?? TAKE_PROFIT_PCT;
-  const effectiveStopLossPct = Math.min(5, advice.stopLossPct ?? STOP_LOSS_PCT);
+  const jevSetup = calculateFlexibleJevTradeSetup({
+    tokenMint,
+    category: "manual_entry",
+    aiConfidence: 0.90,
+    devHoldingPct: 3.5,
+    solAmount: 1.0,
+    marketCapSol: liq / 150,
+    liquidityUsd: liq,
+    volume24hUsd: vol,
+    buyCount: buys,
+    sellCount: sells,
+    availableCashUsd: wallet.availableCash,
+    basePositionSizeUsd: positionSize,
+  });
+
+  const effectivePositionSize = jevSetup.positionSizeUsd;
+  const effectiveTakeProfitPct = jevSetup.takeProfitPct;
+  const effectiveStopLossPct = jevSetup.stopLossPct; // Strictly <= 4.8%, never exceeds 5%
+  const breakevenTriggerPct = jevSetup.breakevenTriggerPct;
+  const trailingFloorPct = jevSetup.trailingFloorPct;
 
   const stopLossPrice = current.price * (1 - effectiveStopLossPct / 100);
   const targetPrice = current.price * (1 + effectiveTakeProfitPct / 100);
@@ -906,7 +956,7 @@ export async function openAutonomousTrade(
     quote_currency: current.quoteCurrency,
     entry_price: current.price,
     entry_time: nowIso,
-    position_size: positionSize,
+    position_size: effectivePositionSize,
     stop_loss_price: stopLossPrice,
     target_price: targetPrice,
     max_hold_until: maxHoldUntil,
@@ -917,13 +967,18 @@ export async function openAutonomousTrade(
     peak_price: current.price,
     trailing_stop_price: stopLossPrice,
     breakeven_locked: false,
+    jev_risk_tier: jevSetup.riskTier,
+    jev_stop_loss_pct: effectiveStopLossPct,
+    jev_take_profit_pct: effectiveTakeProfitPct,
+    jev_breakeven_trigger_pct: breakevenTriggerPct,
+    jev_trailing_floor_pct: trailingFloorPct,
   };
 
   activeOpenMints.add(tokenMint);
   subscribeToTokenTrades(tokenMint);
 
-  wallet.availableCash = Math.max(0, wallet.availableCash - positionSize);
-  wallet.allocatedCash += positionSize;
+  wallet.availableCash = Math.max(0, wallet.availableCash - effectivePositionSize);
+  wallet.allocatedCash += effectivePositionSize;
   wallet.totalTradesExecuted += 1;
   writePaperWallet(wallet);
 
@@ -936,7 +991,7 @@ export async function openAutonomousTrade(
     category: "manual_entry",
     quote_currency: current.quoteCurrency,
     entry_price: current.price,
-    position_size: positionSize,
+    position_size: effectivePositionSize,
     stop_loss_price: stopLossPrice,
     target_price: targetPrice,
     max_hold_until: maxHoldUntil,
@@ -950,15 +1005,18 @@ export async function openAutonomousTrade(
     `🎯 *[AUTONOMOUS SINGLE TRADE: BUY EXECUTED]*\n\n` +
     `*${name} ($${symbol})*\n` +
     `• Token CA: \`${tokenMint}\`\n` +
+    `• JEV Strategy: *${jevSetup.badge}*\n` +
     `• Single-Trade Lifecycle: *Autonomous BUY ➡️ Active Dump Shield ➡️ Auto-SELL*\n` +
+    `• Entry Execution: *SUPERFAST INSTANT SWEEP*\n` +
     `• Entry Price: *${entryStr} USD*\n` +
-    `• Position Bet: *$${positionSize.toFixed(2)} USD* (Allocated from Paper Wallet)\n` +
-    `• Available Cash Remaining: *$${wallet.availableCash.toFixed(2)} USD*\n` +
+    `• Flexible Entry Size: *$${effectivePositionSize.toFixed(2)} USD* (JEV Dynamic Sizing)\n` +
+    `• Paper Wallet Available: *$${wallet.availableCash.toFixed(2)} USD*\n` +
     `• Dump Shield: *ACTIVE (Auto-exits on dev sell or velocity drop >= 3.5%)*\n` +
-    `• Stop-Loss (-${effectiveStopLossPct}%): *${stopStr}* (Strict 5% limit)\n` +
-    `• Take-Profit (+${effectiveTakeProfitPct}%): *${targetStr}*\n` +
+    `• Flexible Stop-Loss (-${effectiveStopLossPct}%): *${stopStr}* (Strict 5% limit protected)\n` +
+    `• Dynamic Take-Profit (+${effectiveTakeProfitPct}%): *${targetStr}*\n` +
+    `• Breakeven Lock Target: *+${breakevenTriggerPct}%* (Auto-protects capital)\n` +
     `• Max Holding Window: *${MAX_HOLD_HOURS} hours*\n\n` +
-    `_The bot will monitor this position 24/7 and automatically SELL when profit target is hit or a dump is detected._`;
+    `_JEV Rationale: ${jevSetup.rationale}_\n`;
 
   const buttons = getTokenTradingButtons(tokenMint);
   const imageUrl = getTokenImageUrl(tokenMint, pair);
@@ -1221,10 +1279,11 @@ export async function checkOpenTrades(): Promise<void> {
       const currentPeak = Math.max(trade.peak_price ?? trade.entry_price, current.price);
       trade.peak_price = currentPeak;
 
-      // Breakeven Shield: At +20% gain, lock stop-loss at +5% (guaranteed profit lock)
-      if (pnlPct >= 20 && !trade.breakeven_locked) {
+      // Dynamic Breakeven Shield calibrated by JEV
+      const breakevenTargetPct = trade.jev_breakeven_trigger_pct ?? 15;
+      if (pnlPct >= breakevenTargetPct && !trade.breakeven_locked) {
         trade.breakeven_locked = true;
-        const breakevenStop = trade.entry_price * 1.05;
+        const breakevenStop = trade.entry_price * 1.03; // locks +3.0% guaranteed net profit
         if (!trade.stop_loss_price || breakevenStop > trade.stop_loss_price) {
           trade.stop_loss_price = breakevenStop;
           trade.trailing_stop_price = breakevenStop;
@@ -1241,14 +1300,14 @@ export async function checkOpenTrades(): Promise<void> {
           const currentVal = Math.max(0, trade.position_size + pnlAbsolute);
           const pnlSign = pnlAbsolute >= 0 ? "+" : "";
           const shieldMsg =
-            `🛡️ *[BREAKEVEN SHIELD ACTIVATED]*\n\n` +
+            `🛡️ *[JEV BREAKEVEN SHIELD ACTIVATED]*\n\n` +
             `*${name} (${symbol})*\n` +
             `• Token CA: \`${trade.token_mint}\`\n` +
             `• Starting Bet: *$${trade.position_size.toFixed(2)} USD*\n` +
             `• Current Position Value: *$${currentVal.toFixed(2)} USD*\n` +
             `• Money Made So Far: *${pnlSign}$${pnlAbsolute.toFixed(2)} USD* (+${pnlPct.toFixed(1)}%)\n` +
             `• Current Price: *${currentStr}* (Entry: *$${trade.entry_price.toFixed(4)}*)\n` +
-            `• Stop-Loss Ratcheted To: *${stopStr}* (+5.0% profit locked)\n` +
+            `• Stop-Loss Ratcheted To: *${stopStr}* (+3.0% profit locked)\n` +
             `• Capital 100% protected against drawdown.\n` +
             `• Progress: ${renderProgressBar(pnlPct, TAKE_PROFIT_PCT)}`;
           const imageUrl = getTokenImageUrl(trade.token_mint, current.pair);
@@ -1261,9 +1320,9 @@ export async function checkOpenTrades(): Promise<void> {
         }
       }
 
-      // Trailing Stop Ratchet: At +35% gain, ratchet stop-loss to +20%
-      if (pnlPct >= 35) {
-        const ratchetStop = trade.entry_price * 1.20;
+      // Trailing Stop Ratchet: At +30% gain, ratchet stop-loss to +15%
+      if (pnlPct >= 30) {
+        const ratchetStop = trade.entry_price * 1.15;
         if (!trade.stop_loss_price || ratchetStop > trade.stop_loss_price) {
           trade.stop_loss_price = ratchetStop;
           trade.trailing_stop_price = ratchetStop;
@@ -1272,9 +1331,10 @@ export async function checkOpenTrades(): Promise<void> {
         }
       }
 
-      // Dynamic High-Peak Trail: If position gained > 35%, trail 15% below peak
-      if (pnlPct >= 35 && currentPeak > trade.entry_price) {
-        const trailingFloor = currentPeak * 0.85;
+      // Dynamic High-Peak Trail: If position gained > 25%, trail dynamically below peak
+      const trailingFloorPct = trade.jev_trailing_floor_pct ?? 12;
+      if (pnlPct >= 25 && currentPeak > trade.entry_price) {
+        const trailingFloor = currentPeak * (1 - trailingFloorPct / 100);
         if (!trade.stop_loss_price || trailingFloor > trade.stop_loss_price) {
           trade.stop_loss_price = trailingFloor;
           trade.trailing_stop_price = trailingFloor;
@@ -1345,8 +1405,9 @@ export async function checkOpenTrades(): Promise<void> {
         continue;
       }
 
-      // Strict 5% max loss guardrail: never allow a loss to exceed 5.0%
-      const isLossExceeded = pnlPct <= -5.0;
+      // Flexible Stop-Loss calibrated by JEV (strictly capped under 5.0% maximum loss limit)
+      const allowedStopLossPct = Math.min(5.0, trade.jev_stop_loss_pct ?? STOP_LOSS_PCT);
+      const isLossExceeded = pnlPct <= -allowedStopLossPct;
       if (isLossExceeded || (trade.stop_loss_price !== null && current.price <= trade.stop_loss_price)) {
         const isTrailing = trade.breakeven_locked || (trade.trailing_stop_price && trade.trailing_stop_price > trade.entry_price);
         await closeTrade(trade, current.price, isTrailing ? "trailing_stop" : "stop_loss");

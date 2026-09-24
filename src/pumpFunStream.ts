@@ -240,15 +240,7 @@ async function processPumpDrop(data: any): Promise<void> {
   const buttons = getTokenTradingButtons(drop.mint);
   const imageUrl = resolvedImageUrl || `https://dd.dexscreener.com/ds-data/tokens/solana/${drop.mint}.png`;
 
-  // Dispatch photo alert instantly to Telegram
-  try {
-    await sendTelegramPhoto(imageUrl, message, buttons);
-    incrementSniperAlerts();
-  } catch {
-    await sendTelegramMessage(message, buttons);
-  }
-
-  // Auto open simulated paper trade if active and wallet funded
+  // 1. Superfast Trade Execution: Fire autonomous trade immediately without waiting for Telegram network latency
   if (isPaperTradingActive() && isPaperWalletFunded()) {
     const solPriceEst = 150;
     const estPriceUsd = (marketCapSol * solPriceEst) / TOTAL_PUMP_SUPPLY;
@@ -260,11 +252,20 @@ async function processPumpDrop(data: any): Promise<void> {
       {
         baseToken: { address: drop.mint, name: drop.name, symbol: drop.symbol },
         dexId: isGraduation ? "raydium" : "pumpfun",
+        liquidity: { usd: marketCapSol * solPriceEst },
       },
       jevConfidence
     ).catch((err) => {
       console.warn("[pumpFunStream] auto paper trade open error:", (err as Error).message);
     });
+  }
+
+  // 2. Dispatch photo alert instantly to Telegram
+  try {
+    await sendTelegramPhoto(imageUrl, message, buttons);
+    incrementSniperAlerts();
+  } catch {
+    await sendTelegramMessage(message, buttons);
   }
 }
 
