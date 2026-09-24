@@ -315,9 +315,9 @@ setInterval(async () => {
 }, MULTI_CHANNEL_INTERVAL_MINUTES * 60 * 1000);
 
 // ---------- In-process paper-trading scheduler ----------
-// Checks open simulated positions against stop/target/time-limit with dynamic trailing stops,
-// and periodically sends a performance digest.
-const PAPER_CHECK_INTERVAL_SECONDS = Number(process.env.PAPER_CHECK_INTERVAL_SECONDS ?? 15);
+// Checks open simulated positions against stop/target/time-limit with dynamic trailing stops
+// and real-time dump detection for emergency capital preservation.
+const PAPER_CHECK_INTERVAL_SECONDS = Number(process.env.PAPER_CHECK_INTERVAL_SECONDS ?? 8);
 const PAPER_DIGEST_INTERVAL_HOURS = Number(process.env.PAPER_DIGEST_INTERVAL_HOURS ?? 24);
 let paperCheckInFlight = false;
 

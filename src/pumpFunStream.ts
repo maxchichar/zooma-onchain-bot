@@ -9,11 +9,12 @@ import crypto from "node:crypto";
 import { supabase } from "./supabase.js";
 import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
-import { openPaperTrade, isPaperTradingActive, isPaperWalletFunded } from "./paperTrading.js";
+import { openPaperTrade, isPaperTradingActive, isPaperWalletFunded, emergencyDumpSell } from "./paperTrading.js";
 import { classifyPumpDrop, calculateDeterministicPumpRugScore } from "./jev.js";
 import { explainPumpDrop } from "./llm.js";
 import { isSniperActive, incrementSniperAlerts } from "./sniperControl.js";
 import { resolvePumpTokenImageUrl } from "./researchSources.js";
+import { registerTokenDevWallet, evaluatePumpTradeDump, sendDumpShieldAlert } from "./dumpDetector.js";
 
 const PUMP_WS_URL = "wss://pumpportal.fun/api/data";
 const TOTAL_PUMP_SUPPLY = 1_000_000_000; // 1 Billion tokens standard on Pump.fun
@@ -90,6 +91,11 @@ async function processPumpDrop(data: any): Promise<void> {
     timestamp: Date.now(),
     isRaydiumGraduation: isGraduation,
   };
+
+  // Register dev wallet in dump detector to catch instant creator sells
+  if (drop.traderPublicKey) {
+    registerTokenDevWallet(drop.mint, drop.traderPublicKey);
+  }
 
   // Add to in-memory feed
   recentPumpDrops.unshift(drop);
@@ -289,9 +295,16 @@ export function startPumpFunStream(): void {
       try {
         const data = JSON.parse(event.data);
         if (data && data.mint) {
-          processPumpDrop(data).catch((err) => {
-            console.warn("[pumpFunStream] error processing drop:", (err as Error).message);
-          });
+          if (data.txType === "sell") {
+            // Real-time developer dump and whale dump interception
+            handlePumpTradeDumpEvent(data).catch((err) => {
+              console.warn("[pumpFunStream] error handling trade dump:", (err as Error).message);
+            });
+          } else if (data.txType === "create" || data.txType === "migrate" || !data.txType) {
+            processPumpDrop(data).catch((err) => {
+              console.warn("[pumpFunStream] error processing drop:", (err as Error).message);
+            });
+          }
         }
       } catch {
         // Ignore heartbeat/ping messages
@@ -314,6 +327,55 @@ export function startPumpFunStream(): void {
     if (!isReconnecting) {
       isReconnecting = true;
       setTimeout(() => startPumpFunStream(), 5000);
+    }
+  }
+}
+
+/**
+ * Handles incoming real-time sell trades on Pump.fun to catch dev dumps and whale dumps instantly.
+ */
+async function handlePumpTradeDumpEvent(data: any): Promise<void> {
+  const dump = evaluatePumpTradeDump({
+    mint: data.mint,
+    txType: data.txType,
+    traderPublicKey: data.traderPublicKey,
+    solAmount: Number(data.solAmount ?? 0),
+    tokenAmount: Number(data.tokenAmount ?? 0),
+    marketCapSol: Number(data.marketCapSol ?? 0),
+  });
+
+  if (dump) {
+    console.log(`[pumpFunStream] Real-time dump detected on ${data.mint} (${dump.dumpType}, ${dump.details})`);
+    const wasAutoSold = await emergencyDumpSell(data.mint, dump);
+    if (!wasAutoSold) {
+      // Dispatches alert to warn holders even if no simulated position is open
+      await sendDumpShieldAlert(dump, "monitoring").catch(() => {});
+    }
+  }
+}
+
+/**
+ * Subscribes to real-time trade updates for a specific token mint on Pumpportal.
+ */
+export function subscribeToTokenTrades(tokenMint: string): void {
+  if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    try {
+      wsConnection.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [tokenMint] }));
+    } catch (err) {
+      console.warn("[pumpFunStream] error subscribing to token trade:", (err as Error).message);
+    }
+  }
+}
+
+/**
+ * Unsubscribes from real-time trade updates for a token mint on Pumpportal.
+ */
+export function unsubscribeFromTokenTrades(tokenMint: string): void {
+  if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    try {
+      wsConnection.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: [tokenMint] }));
+    } catch (err) {
+      console.warn("[pumpFunStream] error unsubscribing from token trade:", (err as Error).message);
     }
   }
 }

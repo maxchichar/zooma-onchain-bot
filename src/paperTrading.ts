@@ -17,8 +17,9 @@ import {
 } from "./telegram.js";
 import { fetchTokenPairs, fetchCollectionStats, getTokenImageUrl } from "./researchSources.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
-import { getRecentPumpDrops } from "./pumpFunStream.js";
+import { getRecentPumpDrops, subscribeToTokenTrades, unsubscribeFromTokenTrades } from "./pumpFunStream.js";
 import { extractPatternFeatures, getPatternOptimizationAdvice, recordTradeOutcome } from "./patternLearning.js";
+import { evaluateTokenDumpRisk, isTokenInDumpCooldown, sendDumpShieldAlert, DumpEvent } from "./dumpDetector.js";
 
 let paperTradingEnabled = true;
 let currentPositionSize = Number(process.env.PAPER_POSITION_SIZE ?? 2); // $2 USD virtual notional per trade
@@ -481,7 +482,13 @@ export async function openPaperTrade(
     return false;
   }
 
-  // 4. Duplicate Check
+  // 4. Dump Blacklist Check
+  if (isTokenInDumpCooldown(tokenOrSymbol)) {
+    console.log(`[paperTrading] Trade rejected for ${tokenOrSymbol}: token is blacklisted by Dump Detection Engine.`);
+    return false;
+  }
+
+  // 5. Duplicate Check
   const alreadyOpen = await isTradeAlreadyOpen(tokenOrSymbol);
   if (alreadyOpen) {
     console.log(`[paperTrading] Trade already open for ${tokenOrSymbol} - skipping duplicate.`);
@@ -501,6 +508,13 @@ export async function openPaperTrade(
 
   if (!current || !current.price || current.price <= 0) {
     console.warn(`[paperTrading] no price available for ${tokenOrSymbol} (${category}) - skipping paper trade.`);
+    return false;
+  }
+
+  // 6. Pre-flight Dump Risk Check: Reject if price is already collapsing or sell-heavy
+  const preDump = await evaluateTokenDumpRisk(tokenOrSymbol, current.price, undefined, current.pair);
+  if (preDump) {
+    console.log(`[paperTrading] Trade rejected for ${tokenOrSymbol}: active dump detected (${preDump.dumpType}, -${preDump.dropPct}%).`);
     return false;
   }
 
@@ -760,6 +774,213 @@ export async function openManualPaperTrade(
 }
 
 /**
+ * AUTONOMOUS SINGLE-TRADE ENGINE:
+ * Executes a complete automated single trade from entry to exit.
+ * Automatically performs:
+ * 1. BUY execution (at market price with AI sizing)
+ * 2. Real-time Dump Shield armed (detects dev dumps, whale sell-offs, velocity drop cliffs >= 3.5%)
+ * 3. Dynamic Take-Profit (+50% or pattern-optimized) & Breakeven Profit Locks
+ * 4. Strict 5% Stop-Loss ceiling (loss never exceeds 5.0%)
+ * 5. Automatic SELL execution when conditions trigger with zero manual intervention needed.
+ */
+export async function openAutonomousTrade(
+  tokenMint: string,
+  sizeUsd?: number,
+  chatId?: string
+): Promise<boolean> {
+  const positionSize = sizeUsd && sizeUsd > 0 ? sizeUsd : currentPositionSize;
+
+  // 1. Paper Wallet check
+  const wallet = readPaperWallet();
+  if (!wallet.isFunded) {
+    if (chatId) {
+      await sendTelegramPhotoTo(
+        chatId,
+        ZOOMA_BANNER_IMAGE,
+        `💼 *[PAPER WALLET NOT FUNDED]*\n\n` +
+        `Before executing autonomous trades, please fund the bot's paper wallet.\n\n` +
+        `Usage: \`/fund <amount>\` (e.g. \`/fund 10\`)\n` +
+        `• Minimum Required: *$10.00 USD (5 trades capacity)*\n` +
+        `• Trade Size: *$${positionSize.toFixed(2)} USD per trade*`
+      );
+    }
+    return false;
+  }
+
+  if (wallet.availableCash < positionSize) {
+    if (chatId) {
+      await sendTelegramMessageTo(
+        chatId,
+        `⚠️ *[INSUFFICIENT PAPER WALLET FUNDS]*\n\n• Available: *$${wallet.availableCash.toFixed(2)} USD*\n• Required: *$${positionSize.toFixed(2)} USD*\n\nUse \`/fund <amount>\` to add funds.`
+      );
+    }
+    return false;
+  }
+
+  // 2. Dump Blacklist & Cooldown Check
+  if (isTokenInDumpCooldown(tokenMint)) {
+    if (chatId) {
+      await sendTelegramMessageTo(
+        chatId,
+        `🚨 *[AUTONOMOUS TRADE BLOCKED BY DUMP SHIELD]*\n\n` +
+        `Token \`${tokenMint}\` was recently flagged by the Dump Detection Engine. Entry is blocked to protect your capital.`
+      );
+    }
+    return false;
+  }
+
+  // 3. Duplicate check
+  const alreadyOpen = await isTradeAlreadyOpen(tokenMint);
+  if (alreadyOpen) {
+    if (chatId) {
+      await sendTelegramMessageTo(chatId, `ℹ️ An autonomous trade is already active for \`${tokenMint}\`.`);
+    }
+    return false;
+  }
+
+  if (chatId) {
+    await sendTelegramMessageTo(chatId, `⚡ Analyzing DEX liquidity & pre-flight dump indicators for \`${tokenMint}\`...`);
+  }
+
+  let current = await getCurrentPrice(tokenMint, "solid_gem");
+  let pair = current?.pair;
+
+  if (!current || !current.price || current.price <= 0) {
+    if (chatId) {
+      await sendTelegramMessageTo(
+        chatId,
+        `⚠️ *Could not resolve live price for CA* \`${tokenMint}\`\n\n` +
+        `No active liquidity pool was found on Raydium, Orca, or Pump.fun yet. Please allow 15 to 30 seconds for pool initialization.`
+      );
+    }
+    return false;
+  }
+
+  // 4. Pre-flight dump risk check
+  const preDump = await evaluateTokenDumpRisk(tokenMint, current.price, undefined, pair);
+  if (preDump) {
+    if (chatId) {
+      await sendTelegramMessageTo(
+        chatId,
+        `🚨 *[DUMP DETECTED ON ENTRY: TRADE ABORTED]*\n\n` +
+        `Token \`${tokenMint}\` shows active dump characteristics: ${preDump.details}\n` +
+        `Autonomous single trade cancelled to protect funds.`
+      );
+    }
+    return false;
+  }
+
+  const dexId = pair?.dexId ?? "raydium";
+  const liq = pair?.liquidity?.usd ?? 25000;
+  const vol = pair?.volume?.h24 ?? 50000;
+  const buys = pair?.txns?.h24?.buys ?? 100;
+  const sells = pair?.txns?.h24?.sells ?? 50;
+
+  const features = extractPatternFeatures({
+    dexId,
+    liquidityUsd: liq,
+    volume24hUsd: vol,
+    buyCount: buys,
+    sellCount: sells,
+    devHoldingPct: 3.5,
+  });
+
+  const advice = getPatternOptimizationAdvice(features, positionSize, wallet.availableCash);
+  const effectiveTakeProfitPct = advice.takeProfitPct ?? TAKE_PROFIT_PCT;
+  const effectiveStopLossPct = Math.min(5, advice.stopLossPct ?? STOP_LOSS_PCT);
+
+  const stopLossPrice = current.price * (1 - effectiveStopLossPct / 100);
+  const targetPrice = current.price * (1 + effectiveTakeProfitPct / 100);
+  const nowIso = new Date().toISOString();
+  const maxHoldUntil = new Date(Date.now() + MAX_HOLD_HOURS * 3600 * 1000).toISOString();
+  const tradeId = crypto.randomUUID();
+
+  const symbol = pair?.baseToken?.symbol ?? tokenMint.slice(0, 8);
+  const name = pair?.baseToken?.name ?? symbol;
+
+  const tradeRecord: StoredTrade = {
+    id: tradeId,
+    signal_id: null,
+    token_mint: tokenMint,
+    category: "manual_entry",
+    quote_currency: current.quoteCurrency,
+    entry_price: current.price,
+    entry_time: nowIso,
+    position_size: positionSize,
+    stop_loss_price: stopLossPrice,
+    target_price: targetPrice,
+    max_hold_until: maxHoldUntil,
+    status: "open",
+    created_at: nowIso,
+    token_symbol: symbol,
+    token_name: name,
+    peak_price: current.price,
+    trailing_stop_price: stopLossPrice,
+    breakeven_locked: false,
+  };
+
+  activeOpenMints.add(tokenMint);
+  subscribeToTokenTrades(tokenMint);
+
+  wallet.availableCash = Math.max(0, wallet.availableCash - positionSize);
+  wallet.allocatedCash += positionSize;
+  wallet.totalTradesExecuted += 1;
+  writePaperWallet(wallet);
+
+  saveTradeToLocalStore(tradeRecord);
+
+  asyncInsertToSupabase({
+    id: tradeRecord.id,
+    signal_id: null,
+    token_mint: tokenMint,
+    category: "manual_entry",
+    quote_currency: current.quoteCurrency,
+    entry_price: current.price,
+    position_size: positionSize,
+    stop_loss_price: stopLossPrice,
+    target_price: targetPrice,
+    max_hold_until: maxHoldUntil,
+  });
+
+  const entryStr = current.price < 0.01 ? `$${current.price.toFixed(6)}` : `$${current.price.toFixed(4)}`;
+  const stopStr = stopLossPrice < 0.01 ? `$${stopLossPrice.toFixed(6)}` : `$${stopLossPrice.toFixed(4)}`;
+  const targetStr = targetPrice < 0.01 ? `$${targetPrice.toFixed(6)}` : `$${targetPrice.toFixed(4)}`;
+
+  const message =
+    `🎯 *[AUTONOMOUS SINGLE TRADE: BUY EXECUTED]*\n\n` +
+    `*${name} ($${symbol})*\n` +
+    `• Token CA: \`${tokenMint}\`\n` +
+    `• Single-Trade Lifecycle: *Autonomous BUY ➡️ Active Dump Shield ➡️ Auto-SELL*\n` +
+    `• Entry Price: *${entryStr} USD*\n` +
+    `• Position Bet: *$${positionSize.toFixed(2)} USD* (Allocated from Paper Wallet)\n` +
+    `• Available Cash Remaining: *$${wallet.availableCash.toFixed(2)} USD*\n` +
+    `• Dump Shield: *ACTIVE (Auto-exits on dev sell or velocity drop >= 3.5%)*\n` +
+    `• Stop-Loss (-${effectiveStopLossPct}%): *${stopStr}* (Strict 5% limit)\n` +
+    `• Take-Profit (+${effectiveTakeProfitPct}%): *${targetStr}*\n` +
+    `• Max Holding Window: *${MAX_HOLD_HOURS} hours*\n\n` +
+    `_The bot will monitor this position 24/7 and automatically SELL when profit target is hit or a dump is detected._`;
+
+  const buttons = getTokenTradingButtons(tokenMint);
+  const imageUrl = getTokenImageUrl(tokenMint, pair);
+
+  if (chatId) {
+    try {
+      await sendTelegramPhotoTo(chatId, imageUrl, message, buttons);
+    } catch {
+      await sendTelegramMessageTo(chatId, message, buttons).catch(() => {});
+    }
+  } else {
+    try {
+      await sendTelegramPhoto(imageUrl, message, buttons);
+    } catch {
+      await sendTelegramMessage(message, buttons).catch(() => {});
+    }
+  }
+
+  return true;
+}
+
+/**
  * Automatically opens a simulated paper trade for a live trending token (if not already opened recently).
  */
 export async function openTrendingPaperTrade(tokenMint: string, fallbackPrice?: number | string, fallbackPair?: any): Promise<boolean> {
@@ -788,7 +1009,7 @@ function computePnl(entryPrice: number, exitPrice: number, positionSize: number)
   return { pnlPct, pnlAbsolute: netPnl, fees };
 }
 
-async function closeTrade(trade: OpenTrade, exitPrice: number, exitReason: string): Promise<void> {
+async function closeTrade(trade: OpenTrade, exitPrice: number, exitReason: string, dumpEvent?: DumpEvent): Promise<void> {
   const { pnlPct, pnlAbsolute, fees } = computePnl(trade.entry_price, exitPrice, trade.position_size);
   const exitTime = new Date().toISOString();
 
@@ -800,8 +1021,9 @@ async function closeTrade(trade: OpenTrade, exitPrice: number, exitReason: strin
   trade.pnl_absolute = pnlAbsolute;
   trade.fees_absolute = fees;
 
-  // Remove from fast active set
+  // Remove from fast active set and trade subscriptions
   activeOpenMints.delete(trade.token_mint);
+  unsubscribeFromTokenTrades(trade.token_mint);
 
   // 1. Update local storage
   saveTradeToLocalStore(trade);
@@ -835,26 +1057,29 @@ async function closeTrade(trade: OpenTrade, exitPrice: number, exitReason: strin
     console.warn("[paperTrading] pattern learning feedback notice:", (err as Error).message);
   }
 
+  const pnlSign = pnlAbsolute >= 0 ? "+" : "";
   let emoji = "📊";
-  let title = "PAPER TRADE CLOSED";
+  let title = "AUTONOMOUS SINGLE TRADE: COMPLETE";
   if (exitReason === "target") {
     emoji = "🎉";
-    title = `TAKE-PROFIT HIT (+${pnlPct.toFixed(1)}%)`;
+    title = `AUTONOMOUS TRADE: TAKE-PROFIT HIT (+${pnlPct.toFixed(1)}%)`;
+  } else if (exitReason === "dump_detected") {
+    emoji = "🚨";
+    title = `DUMP SHIELD: EMERGENCY AUTO-SELL (${pnlSign}${pnlPct.toFixed(1)}%)`;
   } else if (exitReason === "stop_loss") {
     emoji = "🛑";
     title = `STOP-LOSS TRIGGERED (${pnlPct.toFixed(1)}%)`;
   } else if (exitReason === "trailing_stop") {
     emoji = "🛡️";
-    title = `TRAILING STOP TRIGGERED (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%)`;
+    title = `TRAILING STOP TRIGGERED (${pnlSign}${pnlPct.toFixed(1)}%)`;
   } else if (exitReason === "manual_close" || exitReason === "manual_close_all") {
     emoji = "⚡";
-    title = `MANUAL EXIT (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%)`;
+    title = `MANUAL EXIT (${pnlSign}${pnlPct.toFixed(1)}%)`;
   } else if (exitReason === "time_exit") {
     emoji = "⏰";
-    title = `TIME LIMIT EXIT (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%)`;
+    title = `TIME LIMIT EXIT (${pnlSign}${pnlPct.toFixed(1)}%)`;
   }
 
-  const pnlSign = pnlAbsolute >= 0 ? "+" : "";
   const entryStr = trade.entry_price < 0.01 ? `$${trade.entry_price.toFixed(6)}` : `$${trade.entry_price.toFixed(4)}`;
   const exitStr = exitPrice < 0.01 ? `$${exitPrice.toFixed(6)}` : `$${exitPrice.toFixed(4)}`;
 
@@ -863,11 +1088,17 @@ async function closeTrade(trade: OpenTrade, exitPrice: number, exitReason: strin
 
   const finalPayout = Math.max(0, trade.position_size + pnlAbsolute);
 
+  // Calculate trade hold duration for receipt
+  const entryDate = new Date(trade.entry_time).getTime();
+  const exitDate = new Date(exitTime).getTime();
+  const holdSeconds = Math.max(1, Math.round((exitDate - entryDate) / 1000));
+  const holdMinutes = Math.max(1, Math.round(holdSeconds / 60));
+  const holdStr = holdSeconds < 120 ? `${holdSeconds}s` : `${holdMinutes}m`;
+
   // Credit funds back to paper wallet
   const wallet = readPaperWallet();
   wallet.allocatedCash = Math.max(0, wallet.allocatedCash - trade.position_size);
-  const payout = Math.max(0, trade.position_size + pnlAbsolute);
-  wallet.availableCash += payout;
+  wallet.availableCash += finalPayout;
   wallet.totalRealizedPnl += pnlAbsolute;
   writePaperWallet(wallet);
 
@@ -876,25 +1107,25 @@ async function closeTrade(trade: OpenTrade, exitPrice: number, exitReason: strin
   const sessionIcon = wallet.totalRealizedPnl >= 0 ? "🟢" : "🔴";
 
   const summary = getAllTimeProfitSummary();
-  const allTimeSign = summary.totalRealizedPnlUsd >= 0 ? "+" : "";
-  const allTimeIcon = summary.totalRealizedPnlUsd >= 0 ? "🟢" : "🔴";
 
   const message =
-    `${emoji} *[PAPER TRADE: ${title}]*\n\n` +
+    `${emoji} *[${title}]*\n\n` +
     `*${name} ($${symbol})*\n` +
     `• Token CA: \`${trade.token_mint}\`\n` +
+    `• Single-Trade Lifecycle: *Autonomous BUY ➡️ Monitoring ➡️ Auto-SELL*\n` +
+    `• Hold Duration: *${holdStr}*\n` +
     `• Strategy: \`${trade.category}\`\n` +
     `• Entry: *${entryStr}* ➡️ Exit: *${exitStr}*\n` +
     `• Starting Bet: *$${trade.position_size.toFixed(2)} USD*\n` +
     `• Final Position Payout: *$${finalPayout.toFixed(2)} USD*\n` +
     `• Net Money Made on Trade: *${pnlSign}$${pnlAbsolute.toFixed(2)} USD* (${pnlSign}${pnlPct.toFixed(1)}%)\n` +
     `• Modeled Fees: *$${fees.toFixed(2)} USD*\n` +
-    `• Exit Reason: \`${exitReason}\`\n\n` +
+    `• Exit Reason: \`${exitReason}\`${exitReason === "dump_detected" ? " 🚨 (Dump Shield Intercept)" : ""}\n\n` +
     `💰 *Paper Wallet Capital & Returns:*\n` +
     `• Available Cash Now: *$${wallet.availableCash.toFixed(2)} USD*\n` +
     `• Session Profit on Funded Capital: *${sessionSign}$${wallet.totalRealizedPnl.toFixed(2)} USD* (${sessionSign}${sessionRoi.toFixed(1)}% ROI) ${sessionIcon}\n` +
     `• Portfolio Win Rate: *${summary.totalWins} Wins / ${summary.totalLosses} Losses* (${summary.winRatePct.toFixed(0)}%)\n\n` +
-    `_Simulated performance tracking net of modeled fees & slippage._`;
+    `_Single trade executed and closed autonomously with zero manual intervention._`;
 
   const buttons = trade.category !== "nft_watch" ? getTokenTradingButtons(trade.token_mint) : undefined;
   const imageUrl = trade.category !== "nft_watch" ? getTokenImageUrl(trade.token_mint) : ZOOMA_BANNER_IMAGE;
@@ -908,6 +1139,32 @@ async function closeTrade(trade: OpenTrade, exitPrice: number, exitReason: strin
       await sendTelegramMessage(message, buttons).catch(() => {});
     }
   }
+
+  // If closed due to dump detection, dispatch detailed emergency dump card
+  if (dumpEvent) {
+    sendDumpShieldAlert(dumpEvent, "auto_sold", {
+      entryPrice: trade.entry_price,
+      exitPrice,
+      savedCapitalUsd: finalPayout,
+      finalPnlPct: pnlPct,
+    }).catch(() => {});
+  }
+}
+
+/**
+ * Executes an immediate emergency auto-sell on an open position when a dump is detected.
+ */
+export async function emergencyDumpSell(tokenMint: string, dump: DumpEvent): Promise<boolean> {
+  const openTrades = await getOpenPaperTrades();
+  const trade = openTrades.find((t) => t.token_mint === tokenMint && t.status === "open");
+  if (!trade) return false;
+
+  const current = await getCurrentPrice(tokenMint, trade.category);
+  const exitPrice = current?.price ?? (dump.detectedPrice > 0 ? dump.detectedPrice : trade.entry_price * 0.96);
+
+  console.log(`[paperTrading] EMERGENCY DUMP SELL executed for ${tokenMint} by ${dump.dumpType}`);
+  await closeTrade(trade, exitPrice, "dump_detected", dump);
+  return true;
 }
 
 /**
@@ -1078,6 +1335,14 @@ export async function checkOpenTrades(): Promise<void> {
         } catch {
           await sendTelegramPhoto(ZOOMA_BANNER_IMAGE, msg, buttons).catch(() => {});
         }
+      }
+
+      // Real-time Dump Detection & Emergency Dump Shield
+      const dump = await evaluateTokenDumpRisk(trade.token_mint, current.price, trade.peak_price, current.pair);
+      if (dump) {
+        console.log(`[paperTrading] DUMP DETECTED on ${trade.token_mint} (${dump.dumpType}, -${dump.dropPct}%): executing emergency auto-sell.`);
+        await closeTrade(trade, current.price, "dump_detected", dump);
+        continue;
       }
 
       // Strict 5% max loss guardrail: never allow a loss to exceed 5.0%

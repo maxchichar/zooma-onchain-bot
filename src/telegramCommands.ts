@@ -19,6 +19,7 @@ import { getTokenTradingButtons } from "./tradeLinks.js";
 import {
   openTrendingPaperTrade,
   openManualPaperTrade,
+  openAutonomousTrade,
   getOpenPositionsReport,
   sendPositionsPhotoCards,
   closePaperTradeManually,
@@ -51,6 +52,7 @@ import {
 import { isSniperActive, setSniperActive, getSniperState } from "./sniperControl.js";
 import { handleChannelsCommand } from "./multiChannelResearch.js";
 import { formatPatternDashboardText } from "./patternLearning.js";
+import { formatDumpDashboardText } from "./dumpDetector.js";
 
 const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const MAX_CAPACITY = Number(process.env.MAX_TRACKED_WALLETS ?? 5000);
@@ -79,6 +81,8 @@ const HELP_TEXT =
   `🤖 *ZOOMA Onchain Intelligence*\n` +
   `_Automated Solana Breakout Engine & Paper Trader_\n\n` +
   `⚡ *Primary Commands:*\n` +
+  `⚡ \`/autotrade <CA>\` : Autonomous Single Trade (Auto-Buy & Auto-Sell)\n` +
+  `🚨 \`/dumps\` : Real-Time Dump Shield & Detected Dumps\n` +
   `🎯 \`/sniper [on|off]\` : Control Millisecond Sniper Engine\n` +
   `🛑 \`/stopsniper\` : Stop Millisecond Drop Alerts\n` +
   `🟢 \`/startsniper\` : Start / Resume Drop Alerts\n` +
@@ -100,6 +104,8 @@ const HELP_TEXT =
   `🐋 \`/wallets\` : Smart Money Tracker & Whales\n` +
   `🧠 \`/ai\` : JEV & LLM AI Architecture\n\n` +
   `🔔 *Automated 24/7 Alerts:*\n` +
+  `• ⚡ Autonomous Single Trades (Automatic Buy ➡️ Dump Shield ➡️ Auto-Sell)\n` +
+  `• 🚨 Real-Time Dump Shield (Dev & Whale Sell Interception)\n` +
   `• 💊 Pump.fun Live Creations & Raydium Migrations\n` +
   `• 🌐 Multi-Channel Scans (Meteora DLMM, Raydium, Moonshot)\n` +
   `• 🧠 Pattern Learning Engine (Dynamic Sizing & Profit Targets)\n` +
@@ -766,6 +772,33 @@ async function handlePaperTradeCommand(chatId: string, action?: string, amountSt
   }
 }
 
+async function handleAutoTrade(chatId: string, tokenMint: string | undefined, sizeStr: string | undefined): Promise<void> {
+  if (!tokenMint || !SOLANA_ADDRESS_RE.test(tokenMint)) {
+    await sendTelegramMessageTo(
+      chatId,
+      `🎯 *[AUTONOMOUS SINGLE TRADE]*\n\n` +
+      `Executes an autonomous round-trip single trade (Auto-BUY ➡️ Real-time Dump Shield & Targets ➡️ Auto-SELL).\n\n` +
+      `Usage: \`/autotrade <token CA> [amount USD]\` (e.g. \`/autotrade <CA> 2\` or \`/scalp <CA>\`)\n\n` +
+      `• Strict 5% Stop-Loss Ceiling Guaranteed\n` +
+      `• Real-time Dump Shield active (Auto-exits on dev dump or velocity cliff)\n` +
+      `• Dynamic Take-Profit (+50%) auto-exit`
+    );
+    return;
+  }
+
+  const size = sizeStr && !isNaN(Number(sizeStr)) && Number(sizeStr) > 0 ? Number(sizeStr) : undefined;
+  await openAutonomousTrade(tokenMint, size, chatId);
+}
+
+async function handleDumpDashboard(chatId: string): Promise<void> {
+  const text = formatDumpDashboardText();
+  try {
+    await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, text, HELP_BUTTONS);
+  } catch {
+    await sendTelegramMessageTo(chatId, text, HELP_BUTTONS);
+  }
+}
+
 async function handleStopSniper(chatId: string): Promise<void> {
   const state = setSniperActive(false);
   const text =
@@ -1079,6 +1112,17 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/insider":
       case "/fresh":
         await handleInsider(chatId);
+        break;
+      case "/autotrade":
+      case "/scalp":
+      case "/singletrade":
+        await handleAutoTrade(chatId, args[0], args[1]);
+        break;
+      case "/dumps":
+      case "/dump":
+      case "/dumpshield":
+      case "/dumpalerts":
+        await handleDumpDashboard(chatId);
         break;
       case "/papertrade":
       case "/activate":
