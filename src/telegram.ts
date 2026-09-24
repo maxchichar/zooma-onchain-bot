@@ -37,19 +37,39 @@ export interface TelegramButton {
   url: string;
 }
 
-export function registerActiveChat(chatId: string): void {
+export function registerActiveChat(chatId: string, label?: string): void {
   if (!chatId) return;
-  if (!activeChatIds.has(chatId)) {
-    activeChatIds.add(chatId);
+  const strId = String(chatId);
+  if (!activeChatIds.has(strId)) {
+    activeChatIds.add(strId);
     saveActiveChats();
-    console.log(`[telegram] registered active subscriber chat: ${chatId}. Total chats: ${activeChatIds.size}`);
+    console.log(`[telegram] registered subscriber chat ${label ? `"${label}" ` : ""}(${strId}). Total subscribers: ${activeChatIds.size}`);
   }
+}
+
+export function unregisterActiveChat(chatId: string): boolean {
+  if (!chatId) return false;
+  const strId = String(chatId);
+  const existed = activeChatIds.delete(strId);
+  if (existed) {
+    saveActiveChats();
+    console.log(`[telegram] unregistered subscriber chat (${strId}). Remaining subscribers: ${activeChatIds.size}`);
+  }
+  return existed;
+}
+
+export function getActiveChatIds(): string[] {
+  return Array.from(activeChatIds);
 }
 
 export function getBroadcastChatIds(): string[] {
   const ids = new Set<string>();
   if (DEFAULT_CHAT_ID && DEFAULT_CHAT_ID !== "8653623689") {
     ids.add(DEFAULT_CHAT_ID);
+  }
+  const channelId = process.env.TELEGRAM_CHANNEL_ID;
+  if (channelId && channelId !== "8653623689") {
+    ids.add(channelId);
   }
   for (const id of activeChatIds) {
     if (id !== "8653623689") {

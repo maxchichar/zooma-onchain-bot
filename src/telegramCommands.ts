@@ -7,6 +7,8 @@ import {
   sendTelegramMessageTo,
   sendTelegramPhotoTo,
   registerActiveChat,
+  unregisterActiveChat,
+  getActiveChatIds,
   scheduleVaporization,
   VAPORIZE_DELAY_SECONDS,
 } from "./telegram.js";
@@ -97,6 +99,44 @@ interface TelegramUpdate {
       last_name?: string;
     };
     text?: string;
+    forward_from_chat?: {
+      id: number;
+      title?: string;
+      type?: string;
+      username?: string;
+    };
+  };
+  channel_post?: {
+    message_id: number;
+    chat: {
+      id: number;
+      title?: string;
+      type: string;
+      username?: string;
+    };
+    text?: string;
+  };
+  my_chat_member?: {
+    chat: {
+      id: number;
+      title?: string;
+      type: string;
+      username?: string;
+    };
+    from: {
+      id: number;
+      first_name?: string;
+      username?: string;
+    };
+    new_chat_member: {
+      status: string;
+      user: {
+        id: number;
+        is_bot: boolean;
+        first_name: string;
+        username?: string;
+      };
+    };
   };
 }
 
@@ -126,6 +166,8 @@ const HELP_TEXT =
   `👥 \`/register\` : Register & Unlock Full Access\n` +
   `🔒 \`/user\` : Member Analytics (Admin Only)\n` +
   `👤 \`/profile\` : Your Member ID & Activity Card\n` +
+  `📢 \`/addchannel <ID>\` : Connect Private Channel for Live Drops\n` +
+  `🆔 \`/id\` : Chat & Forwarded Channel ID Inspector\n` +
   `🛡️ \`/scan <CA>\` : Security Audit & Snipe Links\n` +
   `🐋 \`/wallets\` : Smart Money Tracker & Whales\n` +
   `🧠 \`/ai\` : JEV & LLM AI Architecture\n\n` +
@@ -1059,6 +1101,59 @@ async function handlePumpDrops(chatId: string): Promise<void> {
 }
 
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
+  // 1. Bot added to or removed from a private channel or supergroup
+  if (update.my_chat_member) {
+    const chat = update.my_chat_member.chat;
+    const newMember = update.my_chat_member.new_chat_member;
+    const chatId = String(chat.id);
+    const title = chat.title || chat.username || "Private Channel";
+
+    if (newMember.status === "administrator" || newMember.status === "member") {
+      registerActiveChat(chatId, title);
+      console.log(`[telegram] bot added as ${newMember.status} to channel "${title}" (${chatId})`);
+      await sendTelegramPhotoTo(
+        chatId,
+        ZOOMA_BANNER_IMAGE,
+        `🚀 *ZOOMA Onchain Drops Activated!*\n\n` +
+          `This channel has been successfully connected to the ZOOMA real-time intelligence stream.\n\n` +
+          `📡 *Live Alerts Enabled:*\n` +
+          `• 💊 Pump.fun 80%+ Ultra-Safe Drops & Raydium Graduations\n` +
+          `• ⚡ Verified Insider Launches (10m - 30m old)\n` +
+          `• 💎 Solid Gems & Fresh 100x Breakouts\n` +
+          `• 🚨 Real-Time Dump Shield & Anti-Rug Interceptions\n\n` +
+          `_Automated 24/7 stream running._`,
+        undefined,
+        0
+      );
+    } else if (newMember.status === "left" || newMember.status === "kicked") {
+      unregisterActiveChat(chatId);
+      console.log(`[telegram] bot removed from channel "${title}" (${chatId})`);
+    }
+    return;
+  }
+
+  // 2. Message posted in a channel where bot is administrator
+  if (update.channel_post) {
+    const post = update.channel_post;
+    const chatId = String(post.chat.id);
+    const title = post.chat.title || "Private Channel";
+    registerActiveChat(chatId, title);
+
+    const postText = post.text?.trim() ?? "";
+    if (postText.startsWith("/start") || postText.startsWith("/drops") || postText.startsWith("/id")) {
+      await sendTelegramMessageTo(
+        chatId,
+        `📢 *ZOOMA Channel Drops Active*\n\n` +
+          `• Channel: *${title}*\n` +
+          `• Channel ID: \`${chatId}\`\n` +
+          `• Status: 🟢 *Connected & Streaming Live Drops*`,
+        undefined,
+        0
+      );
+    }
+    return;
+  }
+
   const message = update.message;
   if (!message?.text) return;
 
@@ -1209,6 +1304,101 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
             `• Registered: *${joined}*\n` +
             `• Total Commands: *${user.commandCount}*`
         );
+        break;
+      }
+      case "/id":
+      case "/chatid":
+      case "/channelid": {
+        let info = `🆔 *Telegram ID Inspector:*\n\n• Current Chat ID: \`${chatId}\`\n• Chat Type: *${message.chat.type ?? "private"}*`;
+        if (message.forward_from_chat) {
+          info +=
+            `\n\n📢 *Forwarded Channel Detected:*\n` +
+            `• Title: *${message.forward_from_chat.title ?? "Channel"}*\n` +
+            `• Channel ID: \`${message.forward_from_chat.id}\`\n` +
+            `• Type: *${message.forward_from_chat.type}*\n\n` +
+            `👉 To connect this channel for live drops, run:\n\`/addchannel ${message.forward_from_chat.id}\``;
+        } else {
+          info += `\n\n💡 *Tip to find your Channel ID:* Forward any message from your private channel into this chat, and send /id!`;
+        }
+        await sendTelegramMessageTo(chatId, info);
+        break;
+      }
+      case "/addchannel":
+      case "/setchannel":
+      case "/connectchannel": {
+        if (!isUserAdmin(userId)) {
+          await sendTelegramMessageTo(chatId, "⛔ Access Denied: Admin only.");
+          break;
+        }
+        const targetChannel = args[0];
+        if (!targetChannel) {
+          await sendTelegramMessageTo(
+            chatId,
+            "⚠️ Usage: `/addchannel <channel_id>`\nExample: `/addchannel -1001234567890`\n\n_Make sure you have added @ZOOMAONCHAINBOT as an administrator to your private channel first!_"
+          );
+          break;
+        }
+        registerActiveChat(targetChannel, "Custom Private Channel");
+        await sendTelegramPhotoTo(
+          targetChannel,
+          ZOOMA_BANNER_IMAGE,
+          `🚀 *ZOOMA Onchain Drops Activated!*\n\n` +
+            `This channel has been connected to the ZOOMA real-time intelligence stream.\n\n` +
+            `📡 *Live Alerts Enabled:*\n` +
+            `• 💊 Pump.fun 80%+ Ultra-Safe Drops\n` +
+            `• ⚡ Verified Insider Launches (10m - 30m old)\n` +
+            `• 💎 Solid Gems & Fresh 100x Breakouts\n` +
+            `• 🚨 Real-Time Dump Shield Interceptions\n\n` +
+            `_Automated 24/7 stream running._`,
+          undefined,
+          0
+        ).catch(() => {});
+        await sendTelegramMessageTo(
+          chatId,
+          `✅ *Channel Registered Successfully!*\n\n` +
+            `Channel ID \`${targetChannel}\` will now receive all automated drops 24/7.`
+        );
+        break;
+      }
+      case "/removechannel":
+      case "/delchannel": {
+        if (!isUserAdmin(userId)) {
+          await sendTelegramMessageTo(chatId, "⛔ Access Denied: Admin only.");
+          break;
+        }
+        const targetChannel = args[0];
+        if (!targetChannel) {
+          await sendTelegramMessageTo(chatId, "⚠️ Usage: `/removechannel <channel_id>`");
+          break;
+        }
+        const removed = unregisterActiveChat(targetChannel);
+        await sendTelegramMessageTo(
+          chatId,
+          removed
+            ? `✅ Channel \`${targetChannel}\` has been removed from live drops.`
+            : `ℹ️ Channel \`${targetChannel}\` was not in the active broadcast list.`
+        );
+        break;
+      }
+      case "/broadcasts":
+      case "/listbroadcasts":
+      case "/mychannel": {
+        const active = getActiveChatIds();
+        const channels = active.filter((id) => id.startsWith("-"));
+        let text = `📢 *Active Broadcast Channels & Groups:*\n\n`;
+        if (channels.length === 0) {
+          text += `_No external channels connected yet._\n\n`;
+        } else {
+          text += channels.map((c) => `• Channel ID: \`${c}\``).join("\n") + "\n\n";
+        }
+        text +=
+          `📋 *How to add your Private Channel:*\n` +
+          `1. Open your Telegram Private Channel\n` +
+          `2. Go to Channel Settings ➡️ Administrators ➡️ Add Administrator\n` +
+          `3. Search for \`@ZOOMAONCHAINBOT\` and add it with permission to Post Messages\n` +
+          `4. The bot will automatically detect the channel and start streaming drops immediately!\n\n` +
+          `Alternatively, send \`/addchannel <channel_id>\`.`;
+        await sendTelegramMessageTo(chatId, text);
         break;
       }
       case "/ai":

@@ -125,8 +125,31 @@ You can control ZOOMA by sending simple commands to [@ZOOMAONCHAINBOT](https://t
 | `/channels` | Run a multi-channel scan across Meteora, Raydium, and Moonshot. |
 | `/patterns` | Inspect the AI pattern learning dashboard and see which setups are most profitable. |
 | `/scan <token CA>` | Run a comprehensive security audit on any contract address and get 1-tap trading links. |
+| `/addchannel <channel_id>` | Connect your private channel or group to receive live drops (Admin only). |
+| `/broadcasts` | View all connected private channels currently receiving live alerts. |
+| `/id` | Inspect your chat ID or find a channel ID by forwarding a message from it. |
 | `/wallets` | View the list of smart money wallets currently being tracked in real time. |
 | `/help` | Display the primary command directory and quick links. |
+
+---
+
+## How to Stream Live Drops to Your Private Channel
+
+You can stream all ultra-safe drops, Pump.fun launches, and dump shield alerts directly into your own private Telegram channel or VIP group:
+
+1. **Add the Bot as Administrator**:
+   * Open your private Telegram Channel or Group.
+   * Go to **Channel Settings** ➡️ **Administrators** ➡️ **Add Administrator**.
+   * Search for **`@ZOOMAONCHAINBOT`** and add it with permission to **Post Messages**.
+
+2. **Automatic Detection**:
+   * As soon as the bot is added as administrator, it automatically detects the channel ID and sends a green activation card into your channel.
+   * Live drops and 80%+ confidence alerts will begin streaming to your channel 24/7!
+
+3. **Manual Connection (Alternative)**:
+   * If you prefer manual setup, simply forward any post from your private channel into your direct chat with [@ZOOMAONCHAINBOT](https://t.me/ZOOMAONCHAINBOT) and send `/id`.
+   * The bot will reveal the channel ID (for example, `-1002345678901`).
+   * Then send `/addchannel -1002345678901` to start receiving drops immediately.
 
 ---
 

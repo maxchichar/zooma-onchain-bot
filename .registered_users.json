@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "userId": "8653623689",
+    "chatId": "8653623689",
+    "firstName": "Early Member",
+    "isRegistered": true,
+    "registeredAt": "2026-09-24T12:42:52.979Z",
+    "lastActiveAt": "2026-09-24T12:42:52.979Z",
+    "commandCount": 0,
+    "role": "user",
+    "status": "active",
+    "memberNumber": 1
+  }
+]

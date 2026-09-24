@@ -8,7 +8,7 @@
  *   WEBHOOK_URL=https://your-app.onrender.com/webhooks/telegram \
  *     npm run register-telegram-webhook
  *
- * TELEGRAM_WEBHOOK_SECRET can be any random string you invent — Telegram
+ * TELEGRAM_WEBHOOK_SECRET can be any random string you invent: Telegram
  * echoes it back in every request's X-Telegram-Bot-Api-Secret-Token
  * header so the server can verify a request actually came from Telegram.
  * Use a DIFFERENT value than HELIUS_WEBHOOK_SECRET (they're unrelated).
@@ -29,7 +29,7 @@ async function main() {
     body: JSON.stringify({
       url: WEBHOOK_URL,
       secret_token: WEBHOOK_SECRET,
-      allowed_updates: ["message"],
+      allowed_updates: ["message", "channel_post", "my_chat_member", "chat_member"],
     }),
   });
 
