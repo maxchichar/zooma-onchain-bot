@@ -33,10 +33,59 @@ let nextMemberNumber = 1;
 function isIdAdmin(id: string): boolean {
   const envAdmin = process.env.TELEGRAM_CHAT_ID;
   const explicitAdmin = process.env.ADMIN_USER_ID;
+  const adminIds = process.env.ADMIN_USER_IDS
+    ? process.env.ADMIN_USER_IDS.split(",").map((s) => s.trim())
+    : [];
   return Boolean(
-    (envAdmin && envAdmin !== "8653623689" && envAdmin === id) ||
-    (explicitAdmin && explicitAdmin === id)
+    (explicitAdmin && explicitAdmin === id) ||
+    adminIds.includes(id) ||
+    (envAdmin && envAdmin !== "8653623689" && envAdmin === id)
   );
+}
+
+/**
+ * Checks whether a user has administrator privileges.
+ */
+export function isUserAdmin(userId: string): boolean {
+  if (!userId) return false;
+  const id = String(userId);
+  const user = usersMap.get(id);
+  if (user && user.role === "admin") return true;
+
+  if (isIdAdmin(id)) {
+    if (user && user.role !== "admin") {
+      user.role = "admin";
+      saveUsers();
+    }
+    return true;
+  }
+
+  // If no explicit admin is configured, Member #1 defaults to admin
+  const explicitAdmin = process.env.ADMIN_USER_ID;
+  const adminIds = process.env.ADMIN_USER_IDS;
+  const envAdmin = process.env.TELEGRAM_CHAT_ID;
+  if (!explicitAdmin && !adminIds && (!envAdmin || envAdmin === "8653623689")) {
+    if (user && user.memberNumber === 1) {
+      user.role = "admin";
+      saveUsers();
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Grants administrator privileges to a user.
+ */
+export function makeUserAdmin(userId: string): boolean {
+  const user = usersMap.get(String(userId));
+  if (user) {
+    user.role = "admin";
+    saveUsers();
+    return true;
+  }
+  return false;
 }
 
 function loadUsers(): void {

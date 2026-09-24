@@ -55,6 +55,7 @@ import { formatPatternDashboardText } from "./patternLearning.js";
 import { formatDumpDashboardText } from "./dumpDetector.js";
 import {
   isUserRegistered,
+  isUserAdmin,
   getUser,
   registerUser,
   recordUserActivity,
@@ -123,7 +124,7 @@ const HELP_TEXT =
   `🌐 \`/channels\` : Multi-Channel Scanner (Meteora, Raydium, Moonshot)\n` +
   `🧠 \`/patterns\` : AI Pattern Learning & Profit Maximizer\n` +
   `👥 \`/register\` : Register & Unlock Full Access\n` +
-  `👥 \`/users\` : Member Analytics & Community Stats\n` +
+  `🔒 \`/user\` : Member Analytics (Admin Only)\n` +
   `👤 \`/profile\` : Your Member ID & Activity Card\n` +
   `🛡️ \`/scan <CA>\` : Security Audit & Snipe Links\n` +
   `🐋 \`/wallets\` : Smart Money Tracker & Whales\n` +
@@ -1170,10 +1171,20 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
         );
         break;
       }
+      case "/user":
       case "/users":
       case "/members":
       case "/userstats":
       case "/analytics":
+      case "/admin":
+        if (!isUserAdmin(userId)) {
+          await sendTelegramMessageTo(
+            chatId,
+            `⛔ *Access Denied: Admin Only*\n\n` +
+              `The \`/user\` member analytics dashboard is restricted to bot administrators only.`
+          );
+          break;
+        }
         await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, formatUserStatsDashboard());
         break;
       case "/profile":
