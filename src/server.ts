@@ -13,6 +13,7 @@ import { checkOpenTrades, sendPerformanceDigest, sendPeriodicPortfolioDigest } f
 import { sendWalletScoreDigest } from "./walletScoring.js";
 import { sendResearchScoreDigest } from "./researchScoring.js";
 import { scanAndRecord100xTopTraders } from "./topTraders.js";
+import { runMultiChannelResearchOnce } from "./multiChannelResearch.js";
 import { handleTelegramUpdate } from "./telegramCommands.js";
 import { HeliusEnhancedTx } from "./types.js";
 
@@ -121,6 +122,7 @@ app.listen(PORT, () => {
     runTrendingAutoAlertOnce().catch((err) => console.error("[server] initial trending alert scan error:", err));
     runInsiderSniperOnce().catch((err) => console.error("[server] initial insider sniper error:", err));
     pollTrackedWalletsActivity().catch((err) => console.error("[server] initial wallet poll error:", err));
+    runMultiChannelResearchOnce().catch((err) => console.error("[server] initial multi-channel research error:", err));
     startPumpFunStream();
   });
 });
@@ -291,6 +293,26 @@ setInterval(async () => {
     researchInFlight = false;
   }
 }, RESEARCH_INTERVAL_MINUTES * 60 * 1000);
+
+// ---------- In-process multi-channel research scheduler (Meteora, Raydium, Moonshot) ----------
+// Regularly audits live Solana DEX pools across multiple channels with AI pattern learning.
+const MULTI_CHANNEL_INTERVAL_MINUTES = Number(process.env.MULTI_CHANNEL_INTERVAL_MINUTES ?? 4);
+let multiChannelInFlight = false;
+
+setInterval(async () => {
+  if (multiChannelInFlight) return;
+  multiChannelInFlight = true;
+  try {
+    const alerted = await runMultiChannelResearchOnce();
+    if (alerted > 0) {
+      console.log(`[server] multi-channel research alerted ${alerted} verified token(s)`);
+    }
+  } catch (err) {
+    console.error("[server] multi-channel research failed:", err);
+  } finally {
+    multiChannelInFlight = false;
+  }
+}, MULTI_CHANNEL_INTERVAL_MINUTES * 60 * 1000);
 
 // ---------- In-process paper-trading scheduler ----------
 // Checks open simulated positions against stop/target/time-limit with dynamic trailing stops,

@@ -167,6 +167,44 @@ export async function fetchFreshTrendingSolanaPairs(): Promise<DexScreenerPair[]
   return unique;
 }
 
+/** Active Meteora DLMM and Dynamic AMM Solana pairs. */
+export async function fetchMeteoraSolanaPairs(): Promise<DexScreenerPair[]> {
+  const res = await safeFetchJson<{ pairs: DexScreenerPair[] | null }>(
+    `${DEXSCREENER_BASE}/latest/dex/search?q=meteora`
+  );
+  const pairs = res?.pairs ?? [];
+  return pairs.filter((p) => p.chainId === "solana" && p.dexId?.toLowerCase().includes("meteora"));
+}
+
+/** Active Moonshot Launchpad Solana pairs. */
+export async function fetchMoonshotSolanaPairs(): Promise<DexScreenerPair[]> {
+  const res = await safeFetchJson<{ pairs: DexScreenerPair[] | null }>(
+    `${DEXSCREENER_BASE}/latest/dex/search?q=moonshot`
+  );
+  const pairs = res?.pairs ?? [];
+  return pairs.filter((p) => p.chainId === "solana" && p.dexId?.toLowerCase().includes("moonshot"));
+}
+
+/** Cross-channel scanner: aggregates live pairs across Meteora, Raydium, Moonshot, and multi-DEX. */
+export async function fetchMultiChannelSolanaPairs(): Promise<DexScreenerPair[]> {
+  const [fresh, meteora, moonshot] = await Promise.all([
+    fetchFreshTrendingSolanaPairs().catch(() => []),
+    fetchMeteoraSolanaPairs().catch(() => []),
+    fetchMoonshotSolanaPairs().catch(() => []),
+  ]);
+
+  const seen = new Set<string>();
+  const combined: DexScreenerPair[] = [];
+
+  for (const p of [...meteora, ...moonshot, ...fresh]) {
+    if (p.baseToken?.address && !seen.has(p.baseToken.address)) {
+      seen.add(p.baseToken.address);
+      combined.push(p);
+    }
+  }
+  return combined;
+}
+
 /** Real market data (liquidity, volume, age) for a token: this is what actually gates a candidate. */
 export async function fetchTokenPairs(tokenAddress: string): Promise<DexScreenerPair[]> {
   const data = await safeFetchJson<{ pairs: DexScreenerPair[] | null }>(

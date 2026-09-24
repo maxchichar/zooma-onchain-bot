@@ -43,6 +43,8 @@ import {
   getWalletProfileButtons,
 } from "./walletInspector.js";
 import { isSniperActive, setSniperActive, getSniperState } from "./sniperControl.js";
+import { handleChannelsCommand } from "./multiChannelResearch.js";
+import { formatPatternDashboardText } from "./patternLearning.js";
 
 const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const MAX_CAPACITY = Number(process.env.MAX_TRACKED_WALLETS ?? 5000);
@@ -85,15 +87,19 @@ const HELP_TEXT =
   `❌ \`/close <CA>\` : Close Position at Market Price\n` +
   `📜 \`/history\` : Closed Trades & Win-Rate History\n` +
   `👑 \`/traders\` : 100x - 1000x Top Traders Leaderboard\n` +
+  `🌐 \`/channels\` : Multi-Channel Scanner (Meteora, Raydium, Moonshot)\n` +
+  `🧠 \`/patterns\` : AI Pattern Learning & Profit Maximizer\n` +
   `🛡️ \`/scan <CA>\` : Security Audit & Snipe Links\n` +
   `🐋 \`/wallets\` : Smart Money Tracker & Whales\n` +
   `🧠 \`/ai\` : JEV & LLM AI Architecture\n\n` +
   `🔔 *Automated 24/7 Alerts:*\n` +
   `• 💊 Pump.fun Live Creations & Raydium Migrations\n` +
+  `• 🌐 Multi-Channel Scans (Meteora DLMM, Raydium, Moonshot)\n` +
+  `• 🧠 Pattern Learning Engine (Dynamic Sizing & Profit Targets)\n` +
   `• ⚡ 10m - 30m Verified Insider Drops\n` +
   `• 🚀 Fresh 100x Breakouts & High Volume Spikes\n` +
   `• 👑 100x - 1000x Top Trader & Sniper Alerts\n` +
-  `• 💼 Auto $2 Paper Trades, Breakeven Shields & TP Hits\n\n` +
+  `• 💼 Auto Paper Trades, Breakeven Shields & TP Hits\n\n` +
   `_Sub-second predictive engine running 24/7._`;
 
 async function handleWatch(chatId: string, address: string | undefined): Promise<void> {
@@ -1026,6 +1032,20 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/pumpfun":
       case "/drops":
         await handlePumpDrops(chatId);
+        break;
+      case "/channels":
+      case "/channel":
+      case "/multichannel":
+      case "/meteora":
+      case "/raydium":
+      case "/moonshot":
+        await handleChannelsCommand(chatId);
+        break;
+      case "/patterns":
+      case "/pattern":
+      case "/learning":
+      case "/maximize":
+        await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, formatPatternDashboardText());
         break;
       case "/insider":
       case "/fresh":

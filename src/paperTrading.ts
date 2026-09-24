@@ -18,6 +18,7 @@ import {
 import { fetchTokenPairs, fetchCollectionStats, getTokenImageUrl } from "./researchSources.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { getRecentPumpDrops } from "./pumpFunStream.js";
+import { extractPatternFeatures, getPatternOptimizationAdvice, recordTradeOutcome } from "./patternLearning.js";
 
 let paperTradingEnabled = true;
 let currentPositionSize = Number(process.env.PAPER_POSITION_SIZE ?? 2); // $2 USD virtual notional per trade
@@ -502,8 +503,31 @@ export async function openPaperTrade(
     return false;
   }
 
-  const stopLossPrice = current.price * (1 - STOP_LOSS_PCT / 100);
-  const targetPrice = current.price * (1 + TAKE_PROFIT_PCT / 100);
+  const dexId = current.pair?.dexId ?? (category === "pump_fun" ? "pumpfun" : "raydium");
+  const liq = current.pair?.liquidity?.usd ?? 25000;
+  const vol = current.pair?.volume?.h24 ?? 50000;
+  const buys = current.pair?.txns?.h24?.buys ?? 100;
+  const sells = current.pair?.txns?.h24?.sells ?? 50;
+
+  const features = extractPatternFeatures({
+    dexId,
+    liquidityUsd: liq,
+    volume24hUsd: vol,
+    buyCount: buys,
+    sellCount: sells,
+    devHoldingPct: category === "pump_fun" ? 3.0 : 4.0,
+  });
+
+  const advice = getPatternOptimizationAdvice(features, currentPositionSize, wallet.availableCash);
+  const effectivePositionSize = advice.recommendedPositionSizeUsd > 0 && advice.recommendedPositionSizeUsd <= wallet.availableCash
+    ? advice.recommendedPositionSizeUsd
+    : currentPositionSize;
+
+  const effectiveTakeProfitPct = advice.takeProfitPct ?? TAKE_PROFIT_PCT;
+  const effectiveStopLossPct = advice.stopLossPct ?? STOP_LOSS_PCT;
+
+  const stopLossPrice = current.price * (1 - effectiveStopLossPct / 100);
+  const targetPrice = current.price * (1 + effectiveTakeProfitPct / 100);
   const nowIso = new Date().toISOString();
   const maxHoldUntil = new Date(Date.now() + MAX_HOLD_HOURS * 3600 * 1000).toISOString();
   const tradeId = crypto.randomUUID();
@@ -519,7 +543,7 @@ export async function openPaperTrade(
     quote_currency: current.quoteCurrency,
     entry_price: current.price,
     entry_time: nowIso,
-    position_size: currentPositionSize,
+    position_size: effectivePositionSize,
     stop_loss_price: stopLossPrice,
     target_price: targetPrice,
     max_hold_until: maxHoldUntil,
@@ -536,8 +560,8 @@ export async function openPaperTrade(
   activeOpenMints.add(tokenOrSymbol);
 
   // Deduct from paper wallet available cash and lock in allocated cash
-  wallet.availableCash = Math.max(0, wallet.availableCash - currentPositionSize);
-  wallet.allocatedCash += currentPositionSize;
+  wallet.availableCash = Math.max(0, wallet.availableCash - effectivePositionSize);
+  wallet.allocatedCash += effectivePositionSize;
   wallet.totalTradesExecuted += 1;
   writePaperWallet(wallet);
 
@@ -578,12 +602,13 @@ export async function openPaperTrade(
     `• Token CA: \`${tokenOrSymbol}\`\n` +
     `• Strategy: \`${category}\`\n` +
     `• Entry Price: *${entryStr} ${current.quoteCurrency.toUpperCase()}*\n` +
-    `• Trade Size: *$${currentPositionSize.toFixed(2)} USD* (Allocated from Paper Wallet)\n` +
+    `• Trade Size: *$${effectivePositionSize.toFixed(2)} USD* (${advice.sizeMultiplier}x Sizing from Paper Wallet)\n` +
     `• Paper Wallet Available: *$${wallet.availableCash.toFixed(2)} USD*\n` +
-    `• Stop-Loss (-${STOP_LOSS_PCT}%): *${stopStr}*\n` +
-    `• Take-Profit (+${TAKE_PROFIT_PCT}%): *${targetStr}*\n` +
+    `• Learned Pattern: ${advice.badge}\n` +
+    `• Stop-Loss (-${effectiveStopLossPct}%): *${stopStr}*\n` +
+    `• Dynamic Take-Profit (+${effectiveTakeProfitPct}%): *${targetStr}*\n` +
     `• Max Holding Window: *${MAX_HOLD_HOURS} hours*\n\n` +
-    `_Auto-executing live simulated trade with >= 80% AI confidence._`;
+    `_Auto-executing live simulated trade with >= 80% AI confidence & pattern optimization._`;
 
   const buttons = category !== "nft_watch" ? getTokenTradingButtons(tokenOrSymbol) : undefined;
   const imageUrl = category !== "nft_watch" ? getTokenImageUrl(tokenOrSymbol, current.pair) : ZOOMA_BANNER_IMAGE;
@@ -789,6 +814,24 @@ async function closeTrade(trade: OpenTrade, exitPrice: number, exitReason: strin
     pnl_absolute: pnlAbsolute,
     fees_absolute: fees,
   });
+
+  // Feed closed trade outcome back into Pattern Learning knowledge base
+  try {
+    recordTradeOutcome({
+      category: trade.category,
+      pnl_pct: pnlPct,
+      pnl_absolute: pnlAbsolute,
+      position_size: trade.position_size,
+      token_mint: trade.token_mint,
+      exit_reason: exitReason,
+      peak_price: trade.peak_price,
+      entry_price: trade.entry_price,
+      token_symbol: trade.token_symbol,
+      pair: null,
+    });
+  } catch (err) {
+    console.warn("[paperTrading] pattern learning feedback notice:", (err as Error).message);
+  }
 
   let emoji = "📊";
   let title = "PAPER TRADE CLOSED";

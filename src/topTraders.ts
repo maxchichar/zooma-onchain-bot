@@ -9,6 +9,7 @@ import { KNOWN_PROGRAM_IDS } from "./types.js";
 import { sendTelegramPhoto, sendTelegramMessage } from "./telegram.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { refreshWebhookWithCurrentWallets } from "./discover.js";
+import { reinforceRunnerPattern } from "./patternLearning.js";
 
 const STORE_FILE = path.resolve(process.cwd(), ".top_traders_store.json");
 
@@ -340,6 +341,20 @@ export async function scanAndRecord100xTopTraders(): Promise<number> {
       const initialFdv = 15_000;
       const multipleX = Math.round(fdv / initialFdv);
       if (multipleX < 20) continue; // Must have done at least 20x, preferably 100x-1000x
+
+      // Teach Pattern Learning engine that this market setup surged into a massive winner
+      try {
+        reinforceRunnerPattern({
+          dexId: bestPair.dexId,
+          liquidityUsd: bestPair.liquidity?.usd ?? 100_000,
+          volume24hUsd: bestPair.volume?.h24 ?? 500_000,
+          multiplierX: multipleX,
+          devHoldingPct: 2.5,
+          tokenSymbol: bestPair.baseToken?.symbol,
+        });
+      } catch {
+        // non-blocking
+      }
 
       const estimatedEntryPrice = currentPrice / multipleX;
 
