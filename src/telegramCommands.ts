@@ -1189,12 +1189,14 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       });
 
       if (isNew) {
+        const adminBadge = user.role === "admin" ? " (Bot Owner & Administrator)" : "";
         await sendTelegramPhotoTo(
           chatId,
           ZOOMA_BANNER_IMAGE,
           `🎉 *Registration Successful!*\n\n` +
-            `Welcome to ZOOMA, *${firstName}*! You are officially registered as *Member #${user.memberNumber}*.\n\n` +
+            `Welcome to ZOOMA, *${firstName}*! You are officially registered as *Member #${user.memberNumber}*${adminBadge}.\n\n` +
             `✅ *Account Status: ACTIVE & UNLOCKED*\n` +
+            (user.role === "admin" ? `👑 *Role: BOT OWNER & ADMINISTRATOR*\n\n` : "") +
             `You now have full access to all bot features:\n` +
             `• ⚡ \`/autotrade <CA>\` : Autonomous single-trade buy and sell\n` +
             `• 🚨 \`/dumps\` : Real-Time Dump Shield and protection\n` +
@@ -1202,14 +1204,17 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
             `• 💵 \`/fund 10\` : Fund virtual paper wallet ($10 USD min)\n` +
             `• 💼 \`/papertrade\` : Start simulated trades\n` +
             `• 🔥 \`/trending\` : Top 15 trending Solana tokens\n` +
-            `• 👥 \`/users\` : Community and user statistics\n\n` +
+            `• 🔒 \`/user\` : Member analytics (Admin)\n` +
+            `• 📢 \`/addchannel <ID>\` : Connect private channel for drops\n\n` +
             `Type \`/help\` anytime to view the complete command list.`
         );
       } else {
+        const isAdmin = isUserAdmin(userId);
         await sendTelegramMessageTo(
           chatId,
           `ℹ️ *Account Already Active*\n\n` +
-            `You are already registered as *Member #${user.memberNumber}*.\n` +
+            `You are registered as *Member #${user.memberNumber}*.\n` +
+            `• Role: *${isAdmin ? "BOT OWNER & ADMINISTRATOR" : "MEMBER"}*\n` +
             `Your access is unlocked. Type \`/help\` to view all commands.`
         );
       }
@@ -1258,12 +1263,37 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/join":
       case "/signup": {
         const user = getUser(userId);
+        const isAdmin = isUserAdmin(userId);
         await sendTelegramMessageTo(
           chatId,
           `ℹ️ *Account Active*\n\n` +
-            `You are already registered as *Member #${user?.memberNumber ?? 1}*.\n` +
+            `You are registered as *Member #${user?.memberNumber ?? 1}*.\n` +
+            `• Role: *${isAdmin ? "BOT OWNER & ADMINISTRATOR" : "MEMBER"}*\n` +
             `Your access is completely unlocked. Type \`/help\` to view all commands.`
         );
+        break;
+      }
+      case "/owner":
+      case "/admin": {
+        const isAdmin = isUserAdmin(userId);
+        if (isAdmin) {
+          await sendTelegramMessageTo(
+            chatId,
+            `👑 *Owner / Admin Verified!*\n\n` +
+              `You are automatically identified as the *Bot Owner & Administrator*.\n\n` +
+              `All administrative controls are active:\n` +
+              `• \`/user\` : View live member counts and usage\n` +
+              `• \`/addchannel <ID>\` : Connect private channel for drops\n` +
+              `• \`/removechannel <ID>\` : Remove channel from drops\n` +
+              `• \`/broadcasts\` : View all connected channels`
+          );
+        } else {
+          await sendTelegramMessageTo(
+            chatId,
+            `⛔ *Access Denied*\n\n` +
+              `Your account (\`${userId}\`) is not an administrator.`
+          );
+        }
         break;
       }
       case "/user":
@@ -1271,7 +1301,6 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/members":
       case "/userstats":
       case "/analytics":
-      case "/admin":
         if (!isUserAdmin(userId)) {
           await sendTelegramMessageTo(
             chatId,

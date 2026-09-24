@@ -31,24 +31,29 @@ const usersMap = new Map<string, RegisteredUser>();
 let nextMemberNumber = 1;
 
 function isIdAdmin(id: string): boolean {
+  const strId = String(id);
+  if (strId === "8653623689") return false;
   const envAdmin = process.env.TELEGRAM_CHAT_ID;
   const explicitAdmin = process.env.ADMIN_USER_ID;
   const adminIds = process.env.ADMIN_USER_IDS
     ? process.env.ADMIN_USER_IDS.split(",").map((s) => s.trim())
     : [];
   return Boolean(
-    (explicitAdmin && explicitAdmin === id) ||
-    adminIds.includes(id) ||
-    (envAdmin && envAdmin !== "8653623689" && envAdmin === id)
+    (explicitAdmin && explicitAdmin === strId) ||
+    adminIds.includes(strId) ||
+    (envAdmin && envAdmin !== "8653623689" && envAdmin === strId)
   );
 }
 
 /**
  * Checks whether a user has administrator privileges.
+ * Automatically identifies the owner (first human user) as administrator.
  */
 export function isUserAdmin(userId: string): boolean {
   if (!userId) return false;
   const id = String(userId);
+  if (id === "8653623689" || id.startsWith("-")) return false;
+
   const user = usersMap.get(id);
   if (user && user.role === "admin") return true;
 
@@ -60,16 +65,20 @@ export function isUserAdmin(userId: string): boolean {
     return true;
   }
 
-  // If no explicit admin is configured, Member #1 defaults to admin
-  const explicitAdmin = process.env.ADMIN_USER_ID;
-  const adminIds = process.env.ADMIN_USER_IDS;
-  const envAdmin = process.env.TELEGRAM_CHAT_ID;
-  if (!explicitAdmin && !adminIds && (!envAdmin || envAdmin === "8653623689")) {
-    if (user && user.memberNumber === 1) {
+  // Count human administrators currently registered
+  const humanAdmins = Array.from(usersMap.values()).filter(
+    (u) => u.userId !== "8653623689" && !u.userId.startsWith("-") && u.role === "admin"
+  );
+
+  // If no human admin exists in the system yet:
+  // Automatically identify this user as the Bot Owner & Administrator!
+  if (humanAdmins.length === 0) {
+    if (user) {
       user.role = "admin";
       saveUsers();
-      return true;
+      console.log(`[userRegistry] automatically identified user ${id} as Bot Owner & Administrator`);
     }
+    return true;
   }
 
   return false;
@@ -94,7 +103,7 @@ function loadUsers(): void {
       const data = JSON.parse(fs.readFileSync(REGISTERED_USERS_FILE, "utf8"));
       if (Array.isArray(data)) {
         for (const u of data) {
-          if (u && u.userId) {
+          if (u && u.userId && u.userId !== "8653623689" && !String(u.userId).startsWith("-")) {
             usersMap.set(String(u.userId), u);
             if (typeof u.memberNumber === "number" && u.memberNumber >= nextMemberNumber) {
               nextMemberNumber = u.memberNumber + 1;
@@ -107,34 +116,16 @@ function loadUsers(): void {
     console.warn("[userRegistry] failed to read registered users file:", (err as Error).message);
   }
 
-  // Pre-seed any existing subscriber chats from .active_chats.json if not present
-  try {
-    if (fs.existsSync(ACTIVE_CHATS_FILE)) {
-      const activeChats = JSON.parse(fs.readFileSync(ACTIVE_CHATS_FILE, "utf8"));
-      if (Array.isArray(activeChats)) {
-        for (const chatId of activeChats) {
-          const strId = String(chatId);
-          if (strId && !usersMap.has(strId)) {
-            const num = nextMemberNumber++;
-            const isAdmin = isIdAdmin(strId);
-            usersMap.set(strId, {
-              userId: strId,
-              chatId: strId,
-              firstName: isAdmin ? "System Admin" : "Early Member",
-              isRegistered: true,
-              registeredAt: new Date().toISOString(),
-              lastActiveAt: new Date().toISOString(),
-              commandCount: 0,
-              role: isAdmin ? "admin" : "user",
-              status: "active",
-              memberNumber: num,
-            });
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.warn("[userRegistry] failed to sync active chats:", (err as Error).message);
+  // If any human user was registered but no human admin is marked yet,
+  // automatically promote Member #1 or the earliest user to Administrator
+  const humanUsers = Array.from(usersMap.values()).filter(
+    (u) => u.userId !== "8653623689" && !u.userId.startsWith("-")
+  );
+  const humanAdmins = humanUsers.filter((u) => u.role === "admin");
+  if (humanUsers.length > 0 && humanAdmins.length === 0) {
+    const earliest = humanUsers.sort((a, b) => a.memberNumber - b.memberNumber)[0];
+    earliest.role = "admin";
+    console.log(`[userRegistry] automatically promoted Member #${earliest.memberNumber} (${earliest.userId}) to Administrator`);
   }
 
   saveUsers();
@@ -201,7 +192,13 @@ export function registerUser(params: {
   }
 
   const memberNum = existing?.memberNumber ?? nextMemberNumber++;
-  const isAdmin = params.role === "admin" || isIdAdmin(id);
+  const humanAdmins = Array.from(usersMap.values()).filter(
+    (u) => u.userId !== "8653623689" && !u.userId.startsWith("-") && u.role === "admin"
+  );
+  const isFirstHuman = Array.from(usersMap.values()).filter(
+    (u) => u.userId !== "8653623689" && !u.userId.startsWith("-")
+  ).length === 0;
+  const isAdmin = params.role === "admin" || isIdAdmin(id) || humanAdmins.length === 0 || isFirstHuman;
 
   const newUser: RegisteredUser = {
     userId: id,
