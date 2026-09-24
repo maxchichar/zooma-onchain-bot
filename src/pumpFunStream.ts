@@ -9,7 +9,7 @@ import crypto from "node:crypto";
 import { supabase } from "./supabase.js";
 import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
-import { openPaperTrade, isPaperTradingActive } from "./paperTrading.js";
+import { openPaperTrade, isPaperTradingActive, isPaperWalletFunded } from "./paperTrading.js";
 import { classifyPumpDrop } from "./jev.js";
 import { explainPumpDrop } from "./llm.js";
 
@@ -224,16 +224,25 @@ async function processPumpDrop(data: any): Promise<void> {
     await sendTelegramMessage(message, buttons);
   }
 
-  // Auto open simulated paper trade if active (runs concurrently)
-  if (isPaperTradingActive()) {
-    const solPriceEst = 150;
-    const estPriceUsd = (marketCapSol * solPriceEst) / TOTAL_PUMP_SUPPLY;
-    openPaperTrade(signalId, drop.mint, "pump_fun", estPriceUsd, {
-      baseToken: { address: drop.mint, name: drop.name, symbol: drop.symbol },
-      dexId: isGraduation ? "raydium" : "pumpfun",
-    }).catch((err) => {
-      console.warn("[pumpFunStream] auto paper trade open error:", (err as Error).message);
-    });
+  // Auto open simulated paper trade if active, wallet funded, and AI confidence is >= 80%
+  if (isPaperTradingActive() && isPaperWalletFunded() && jevConfidence >= 0.80) {
+    if (devHoldingPct <= 10.0 && raceResult.jev?.pattern !== "dev_heavy_bundle") {
+      const solPriceEst = 150;
+      const estPriceUsd = (marketCapSol * solPriceEst) / TOTAL_PUMP_SUPPLY;
+      openPaperTrade(
+        signalId,
+        drop.mint,
+        "pump_fun",
+        estPriceUsd,
+        {
+          baseToken: { address: drop.mint, name: drop.name, symbol: drop.symbol },
+          dexId: isGraduation ? "raydium" : "pumpfun",
+        },
+        jevConfidence
+      ).catch((err) => {
+        console.warn("[pumpFunStream] auto paper trade open error:", (err as Error).message);
+      });
+    }
   }
 }
 

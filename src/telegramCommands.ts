@@ -17,11 +17,16 @@ import {
   sendPositionsPhotoCards,
   closePaperTradeManually,
   sendTradeHistory,
+  sendPaperBalancePhoto,
   computeStats,
   formatStats,
   setPaperTradingActive,
   setPaperTradingPositionSize,
   getPaperTradingSettings,
+  fundPaperWallet,
+  getPaperWallet,
+  isPaperWalletFunded,
+  stopPaperTradingAndReport,
 } from "./paperTrading.js";
 import { getRecentTraderEntries, formatTraderEntriesText, scanAndRecord100xTopTraders } from "./topTraders.js";
 import { scanSolidGems, fireSolidGemAlert } from "./solidGems.js";
@@ -68,8 +73,11 @@ const HELP_TEXT =
   `⚡ \`/insider\` : Ultra-Early Launches (10 - 30m old)\n` +
   `💎 \`/gems\` : Live Fresh Gems (< 48h) & 100x Breakouts\n` +
   `🔥 \`/trending\` : Top 15 Trending Solana Tokens\n` +
-  `💼 \`/papertrade [CA]\` : Trade CA ($2 USD) / Configure\n` +
+  `💵 \`/fund <amount>\` : Fund Paper Wallet (e.g. \`/fund 50\`)\n` +
+  `💼 \`/papertrade [CA]\` : Start / Trade CA ($2 USD) / Configure\n` +
+  `🛑 \`/stoppapertrade\` : Stop Trading & See Profit on Capital\n` +
   `📈 \`/positions\` : Live Paper Portfolio & Real-Time PnL\n` +
+  `💰 \`/balance\` : All-Time Money Made & Portfolio Cash\n` +
   `❌ \`/close <CA>\` : Close Position at Market Price\n` +
   `📜 \`/history\` : Closed Trades & Win-Rate History\n` +
   `👑 \`/traders\` : 100x - 1000x Top Traders Leaderboard\n` +
@@ -580,6 +588,63 @@ async function handlePerformance(chatId: string): Promise<void> {
   await sendTelegramMessageTo(chatId, message);
 }
 
+async function handleFundPaperWallet(chatId: string, amountStr?: string): Promise<void> {
+  const amount = amountStr ? Number(amountStr) : NaN;
+  if (isNaN(amount) || amount <= 0) {
+    const wallet = getPaperWallet();
+    const statusText = wallet.isFunded
+      ? `• Current Wallet Status: ✅ FUNDED\n` +
+        `• Initial Funded Capital: *$${wallet.initialFundedAmount.toFixed(2)} USD*\n` +
+        `• Available Cash: *$${wallet.availableCash.toFixed(2)} USD*\n` +
+        `• In Active Trades: *$${wallet.allocatedCash.toFixed(2)} USD*\n\n` +
+        `To add more capital, specify the amount: e.g. \`/fund 50\` or \`/fund 100\``
+      : `• Current Wallet Status: 🔴 NOT FUNDED\n\n` +
+        `Please specify how much to fund the paper wallet with:\n` +
+        `Example: \`/fund 50\` (funds wallet with $50.00 USD for $2.00 trades)`;
+
+    const text =
+      `💼 *[ZOOMA PAPER TRADING WALLET]*\n\n` +
+      statusText +
+      `\n\n⚡ *Quick Commands:*\n` +
+      `• \`/fund 25\` : Fund with $25.00 USD (12 trades capacity)\n` +
+      `• \`/fund 50\` : Fund with $50.00 USD (25 trades capacity)\n` +
+      `• \`/fund 100\` : Fund with $100.00 USD (50 trades capacity)\n` +
+      `• \`/papertrade on\` : Start auto-trading with funded wallet\n` +
+      `• \`/stoppapertrade\` : Stop trading & show profit made on capital`;
+
+    try {
+      await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, text, HELP_BUTTONS);
+    } catch {
+      await sendTelegramMessageTo(chatId, text, HELP_BUTTONS);
+    }
+    return;
+  }
+
+  const wallet = fundPaperWallet(amount);
+  setPaperTradingActive(true);
+  const capacity = Math.floor(wallet.availableCash / 2.0);
+  const text =
+    `🎉 *[PAPER WALLET FUNDED SUCCESSFULLY]*\n\n` +
+    `• Added Capital: *+$${amount.toFixed(2)} USD*\n` +
+    `• Total Capital Funded: *$${wallet.initialFundedAmount.toFixed(2)} USD*\n` +
+    `• Available Trading Cash: *$${wallet.availableCash.toFixed(2)} USD*\n` +
+    `• Position Sizing: *$2.00 USD per trade*\n` +
+    `• Execution Capacity: *~${capacity} concurrent / sequential trades*\n` +
+    `• AI Safety Requirement: *>= 80% AI Confidence*\n` +
+    `• System Status: 🟢 *ACTIVE (Auto-Trading Enabled)*\n\n` +
+    `ZOOMA is now live! It will automatically allocate $2.00 paper trades from your wallet whenever a Solana alert hits >= 80% AI confidence.\n\n` +
+    `⚡ *Controls & Tracking:*\n` +
+    `• \`/positions\` : Inspect open positions & real-time PnL\n` +
+    `• \`/balance\` : Live profit & wallet balance\n` +
+    `• \`/stoppapertrade\` : Stop trading & calculate profit on capital`;
+
+  try {
+    await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, text, HELP_BUTTONS);
+  } catch {
+    await sendTelegramMessageTo(chatId, text, HELP_BUTTONS);
+  }
+}
+
 async function handlePaperTradeCommand(chatId: string, action?: string, amountStr?: string): Promise<void> {
   // If action is a Solana address, open manual paper trade immediately!
   if (action && SOLANA_ADDRESS_RE.test(action)) {
@@ -590,37 +655,83 @@ async function handlePaperTradeCommand(chatId: string, action?: string, amountSt
 
   const normAction = action?.toLowerCase();
 
+  // If user requests to stop or pause paper trading
+  if (normAction === "off" || normAction === "pause" || normAction === "stop") {
+    await stopPaperTradingAndReport(chatId);
+    return;
+  }
+
+  // If user passed a number to /papertrade (e.g. /papertrade 50):
+  // If wallet is not funded yet, fund it with that amount!
+  if (action && !isNaN(Number(action)) && Number(action) > 0) {
+    if (!isPaperWalletFunded()) {
+      await handleFundPaperWallet(chatId, action);
+      return;
+    }
+    setPaperTradingPositionSize(Number(action));
+    setPaperTradingActive(true);
+  }
+
+  // Check if wallet is funded. If not, prompt user to fund it!
+  if (!isPaperWalletFunded()) {
+    const promptText =
+      `💼 *[PAPER TRADING WALLET NOT FUNDED]*\n\n` +
+      `Before activating automated paper trading, please fund the bot with a fixed capital amount.\n\n` +
+      `ZOOMA will allocate *$2.00 USD per trade* (strict >= 80% AI confidence) from your funded capital and track exact profits on your money.\n\n` +
+      `*How much would you like to fund the bot with?*\n\n` +
+      `⚡ *Quick Funding Options:*\n` +
+      `• \`/fund 25\` : Fund $25.00 USD (12 trades capacity)\n` +
+      `• \`/fund 50\` : Fund $50.00 USD (25 trades capacity)\n` +
+      `• \`/fund 100\` : Fund $100.00 USD (50 trades capacity)\n` +
+      `• Or specify any amount: \`/fund <amount>\`\n\n` +
+      `_After you stop paper trading with \`/stoppapertrade\`, the bot will display the exact profit made on your funded capital._`;
+
+    try {
+      await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, promptText, HELP_BUTTONS);
+    } catch {
+      await sendTelegramMessageTo(chatId, promptText, HELP_BUTTONS);
+    }
+    return;
+  }
+
   if (normAction === "on" || normAction === "activate" || normAction === "start") {
     setPaperTradingActive(true);
     if (amountStr && !isNaN(Number(amountStr)) && Number(amountStr) > 0) {
       setPaperTradingPositionSize(Number(amountStr));
     }
-  } else if (normAction === "off" || normAction === "pause" || normAction === "stop") {
-    setPaperTradingActive(false);
-  } else if (action && !isNaN(Number(action)) && Number(action) > 0) {
-    setPaperTradingPositionSize(Number(action));
-    setPaperTradingActive(true);
   }
 
   const settings = getPaperTradingSettings();
+  const wallet = getPaperWallet();
   const statusEmoji = settings.enabled ? "🟢" : "🔴";
   const statusText = settings.enabled ? "ACTIVE (Auto-Trading Enabled)" : "PAUSED";
+  const remainingTrades = Math.floor(wallet.availableCash / settings.positionSize);
 
   const message =
     `💼 *[PAPER TRADING CONTROL CENTER]*\n\n` +
     `• System Status: ${statusEmoji} *${statusText}*\n` +
+    `• Initial Funded Capital: *$${wallet.initialFundedAmount.toFixed(2)} USD*\n` +
+    `• Available Trading Cash: *$${wallet.availableCash.toFixed(2)} USD*\n` +
+    `• In Active Trades: *$${wallet.allocatedCash.toFixed(2)} USD*\n` +
     `• Position Sizing: *$${settings.positionSize.toFixed(2)} USD per trade*\n` +
+    `• Execution Capacity: *~${remainingTrades} trades remaining*\n` +
+    `• AI Safety Filter: *>= 80% Confidence required*\n` +
     `• Take-Profit Target: *+${settings.takeProfitPct}%* (Auto-sell trigger)\n` +
     `• Stop-Loss Limit: *-${settings.stopLossPct}%* (Capital protection)\n` +
     `• Max Holding Time: *${settings.maxHoldHours} hours*\n\n` +
     `⚡ *Controls & Quick Commands:*\n` +
     `• \`/papertrade <CA>\` : Trade specific CA (e.g. \`/papertrade <CA> 2\`)\n` +
     `• \`/papertrade on\` : Activate live simulated trades\n` +
-    `• \`/papertrade off\` : Pause auto-trading\n` +
-    `• \`/papertrade <size>\` : Set position size (e.g. \`/papertrade 5\`)\n` +
-    `• \`/positions\` : Inspect active positions & real-time PnL`;
+    `• \`/stoppapertrade\` : Stop trading & see net profit report\n` +
+    `• \`/fund <amount>\` : Add more capital to paper wallet\n` +
+    `• \`/positions\` : Inspect active positions & real-time PnL\n` +
+    `• \`/balance\` : All-time money made & earnings breakdown`;
 
-  await sendTelegramMessageTo(chatId, message);
+  try {
+    await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, message, HELP_BUTTONS);
+  } catch {
+    await sendTelegramMessageTo(chatId, message, HELP_BUTTONS);
+  }
 }
 
 async function handleAiExplanation(chatId: string): Promise<void> {
@@ -815,6 +926,23 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/trade":
         await handlePaperTradeCommand(chatId, args[0], args[1]);
         break;
+      case "/stoppapertrade":
+      case "/stoppaper":
+      case "/stoptrading":
+      case "/pausepapertrade":
+      case "/stoptrade":
+        await stopPaperTradingAndReport(chatId);
+        break;
+      case "/fund":
+      case "/fundwallet":
+      case "/fundpaperwallet":
+        await handleFundPaperWallet(chatId, args[0]);
+        break;
+      case "/paperwallet":
+      case "/pwallet":
+      case "/walletbalance":
+        await sendPaperBalancePhoto(chatId);
+        break;
       case "/gems":
       case "/gem":
       case "/100x":
@@ -838,6 +966,12 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       case "/closed":
       case "/past":
         await sendTradeHistory(chatId);
+        break;
+      case "/balance":
+      case "/profit":
+      case "/money":
+      case "/earnings":
+        await sendPaperBalancePhoto(chatId);
         break;
       case "/pnl":
       case "/performance":

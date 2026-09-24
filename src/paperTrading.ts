@@ -29,7 +29,15 @@ const SLIPPAGE_PCT = Number(process.env.PAPER_SLIPPAGE_PCT ?? 2); // per side
 
 const milestoneAlertedTrades = new Set<string>();
 
+const ZOOMA_BANNER_IMAGE = process.env.ZOOMA_BANNER_URL ?? "assets/zooma_logo.png";
 const STORE_FILE = path.resolve(process.cwd(), ".paper_trades_store.json");
+const WALLET_STORE_FILE = path.resolve(process.cwd(), ".paper_wallet_store.json");
+
+/**
+ * AI CONFIDENCE THRESHOLD:
+ * Only signals and drops with >= 80% (0.80) AI confidence qualify for auto paper trading.
+ */
+export const MIN_AI_CONFIDENCE = 0.80;
 
 export type Category =
   | "wallet_pattern"
@@ -120,6 +128,67 @@ function saveTradeToLocalStore(trade: StoredTrade): void {
   writeLocalLedger(all);
 }
 
+export interface AllTimeProfitSummary {
+  totalClosed: number;
+  totalWins: number;
+  totalLosses: number;
+  winRatePct: number;
+  totalRealizedPnlUsd: number;
+  totalFeesUsd: number;
+  bestWinner: { symbol: string; mint: string; pnlUsd: number; pnlPct: number } | null;
+  worstLoss: { symbol: string; mint: string; pnlUsd: number; pnlPct: number } | null;
+}
+
+export function getAllTimeProfitSummary(): AllTimeProfitSummary {
+  const local = readLocalLedger();
+  const closed = local.filter((t) => t.status === "closed");
+  let totalRealizedPnlUsd = 0;
+  let totalFeesUsd = 0;
+  let totalWins = 0;
+  let totalLosses = 0;
+  let bestWinner: { symbol: string; mint: string; pnlUsd: number; pnlPct: number } | null = null;
+  let worstLoss: { symbol: string; mint: string; pnlUsd: number; pnlPct: number } | null = null;
+
+  for (const t of closed) {
+    const pnlUsd = Number(t.pnl_absolute ?? 0);
+    const pnlPct = Number(t.pnl_pct ?? 0);
+    const fees = Number(t.fees_absolute ?? 0);
+    totalRealizedPnlUsd += pnlUsd;
+    totalFeesUsd += fees;
+    if (pnlUsd > 0) totalWins++;
+    else if (pnlUsd < 0) totalLosses++;
+
+    if (!bestWinner || pnlUsd > bestWinner.pnlUsd) {
+      bestWinner = {
+        symbol: t.token_symbol ?? t.token_mint.slice(0, 8),
+        mint: t.token_mint,
+        pnlUsd,
+        pnlPct,
+      };
+    }
+    if (!worstLoss || pnlUsd < worstLoss.pnlUsd) {
+      worstLoss = {
+        symbol: t.token_symbol ?? t.token_mint.slice(0, 8),
+        mint: t.token_mint,
+        pnlUsd,
+        pnlPct,
+      };
+    }
+  }
+
+  const winRatePct = closed.length > 0 ? (totalWins / closed.length) * 100 : 0;
+  return {
+    totalClosed: closed.length,
+    totalWins,
+    totalLosses,
+    winRatePct,
+    totalRealizedPnlUsd,
+    totalFeesUsd,
+    bestWinner,
+    worstLoss,
+  };
+}
+
 export function isPaperTradingActive(): boolean {
   return paperTradingEnabled;
 }
@@ -140,6 +209,148 @@ export function getPaperTradingSettings() {
     takeProfitPct: TAKE_PROFIT_PCT,
     maxHoldHours: MAX_HOLD_HOURS,
   };
+}
+
+export interface PaperWalletState {
+  initialFundedAmount: number;
+  availableCash: number;
+  allocatedCash: number;
+  totalRealizedPnl: number;
+  totalTradesExecuted: number;
+  isFunded: boolean;
+  sessionStartTime: string;
+  lastUpdated: string;
+}
+
+export function readPaperWallet(): PaperWalletState {
+  try {
+    if (fs.existsSync(WALLET_STORE_FILE)) {
+      const raw = fs.readFileSync(WALLET_STORE_FILE, "utf8");
+      return JSON.parse(raw);
+    }
+  } catch (err) {
+    console.warn("[paperTrading] failed to read paper wallet store:", (err as Error).message);
+  }
+  return {
+    initialFundedAmount: 0,
+    availableCash: 0,
+    allocatedCash: 0,
+    totalRealizedPnl: 0,
+    totalTradesExecuted: 0,
+    isFunded: false,
+    sessionStartTime: new Date().toISOString(),
+    lastUpdated: new Date().toISOString(),
+  };
+}
+
+export function writePaperWallet(wallet: PaperWalletState): void {
+  try {
+    wallet.lastUpdated = new Date().toISOString();
+    fs.writeFileSync(WALLET_STORE_FILE, JSON.stringify(wallet, null, 2), "utf8");
+  } catch (err) {
+    console.error("[paperTrading] failed to write paper wallet store:", (err as Error).message);
+  }
+}
+
+export function fundPaperWallet(amountUsd: number): PaperWalletState {
+  const wallet = readPaperWallet();
+  const validAmount = Math.max(0, amountUsd);
+  wallet.initialFundedAmount = validAmount;
+  wallet.availableCash = validAmount;
+  wallet.allocatedCash = 0;
+  wallet.totalRealizedPnl = 0;
+  wallet.totalTradesExecuted = 0;
+  wallet.isFunded = validAmount > 0;
+  wallet.sessionStartTime = new Date().toISOString();
+  wallet.lastUpdated = new Date().toISOString();
+  writePaperWallet(wallet);
+  paperTradingEnabled = true;
+  return wallet;
+}
+
+export function getPaperWallet(): PaperWalletState {
+  return readPaperWallet();
+}
+
+export function isPaperWalletFunded(): boolean {
+  const w = readPaperWallet();
+  return w.isFunded && (w.availableCash > 0 || w.allocatedCash > 0);
+}
+
+/**
+ * Stops paper trading and generates a detailed session report showing exact profits made on the funded amount.
+ */
+export async function stopPaperTradingAndReport(chatId: string): Promise<void> {
+  paperTradingEnabled = false;
+
+  const wallet = readPaperWallet();
+  const openTrades = await getOpenPaperTrades();
+
+  let openPositionsCurrentValue = 0;
+  let openUnrealizedPnl = 0;
+  let openWinners = 0;
+  let openLosers = 0;
+
+  for (const trade of openTrades) {
+    const current = await getCurrentPrice(trade.token_mint, trade.category);
+    if (current) {
+      const { pnlAbsolute } = computePnl(tradeEntrySafe(trade.entry_price), current.price, trade.position_size);
+      openPositionsCurrentValue += Math.max(0, trade.position_size + pnlAbsolute);
+      openUnrealizedPnl += pnlAbsolute;
+      if (pnlAbsolute >= 0) openWinners++;
+      else openLosers++;
+    } else {
+      openPositionsCurrentValue += trade.position_size;
+    }
+  }
+
+  const totalWalletVal = wallet.availableCash + openPositionsCurrentValue;
+  const netProfitUsd = totalWalletVal - wallet.initialFundedAmount;
+  const roiPct = wallet.initialFundedAmount > 0 ? (netProfitUsd / wallet.initialFundedAmount) * 100 : 0;
+  const sign = netProfitUsd >= 0 ? "+" : "";
+  const icon = netProfitUsd >= 0 ? "🟢" : "🔴";
+  const realizedSign = wallet.totalRealizedPnl >= 0 ? "+" : "";
+  const realizedIcon = wallet.totalRealizedPnl >= 0 ? "🟢" : "🔴";
+  const unrealizedSign = openUnrealizedPnl >= 0 ? "+" : "";
+
+  const summary = getAllTimeProfitSummary();
+
+  const report =
+    `🛑 *[PAPER TRADING STOPPED & SESSION PROFIT REPORT]*\n\n` +
+    `💵 *Funded Capital & Net Profit:*\n` +
+    `• Initial Funded Capital: *$${wallet.initialFundedAmount.toFixed(2)} USD*\n` +
+    `• Final Paper Wallet Valuation: *$${totalWalletVal.toFixed(2)} USD*\n` +
+    `• Total Net Profit Made: *${sign}$${netProfitUsd.toFixed(2)} USD* (${sign}${roiPct.toFixed(1)}% ROI) ${icon}\n\n` +
+    `📊 *Wallet Capital Breakdown:*\n` +
+    `• Available Cash: *$${wallet.availableCash.toFixed(2)} USD*\n` +
+    `• Active Open Positions: *$${openPositionsCurrentValue.toFixed(2)} USD* (${openTrades.length} trades: ${openWinners} in profit, ${openLosers} in drawdown)\n` +
+    `• Realized Cash Made (Closed Trades): *${realizedSign}$${wallet.totalRealizedPnl.toFixed(2)} USD* ${realizedIcon}\n` +
+    `• Unrealized Profit (Active Trades): *${unrealizedSign}$${openUnrealizedPnl.toFixed(2)} USD*\n` +
+    `• Total Session Trades Executed: *${wallet.totalTradesExecuted} trades*\n` +
+    `• Overall Win Rate: *${summary.totalWins} Wins / ${summary.totalLosses} Losses* (${summary.winRatePct.toFixed(0)}%)\n\n` +
+    `⚡ *Status:* 🛑 *PAUSED / STOPPED*\n` +
+    `_Auto-trading has been halted. No further simulated trades will be placed._\n\n` +
+    `💡 *To start a new session or fund more capital:*\n` +
+    `• \`/fund <amount>\` : Re-fund paper wallet (e.g. \`/fund 50\`)\n` +
+    `• \`/papertrade on\` : Re-activate paper trading\n` +
+    `• \`/close all\` : Close all active positions at market price`;
+
+  const buttons = [
+    [
+      { text: "⚡ Photon Terminal", url: "https://photon-sol.tinyastro.io" },
+      { text: "🐂 BullX Terminal", url: "https://neo.bullx.io" },
+    ],
+    [
+      { text: "📊 GMGN AI", url: "https://gmgn.ai/sol" },
+      { text: "📈 DexScreener", url: "https://dexscreener.com/solana" },
+    ],
+  ];
+
+  try {
+    await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, report, buttons);
+  } catch {
+    await sendTelegramMessageTo(chatId, report, buttons);
+  }
 }
 
 interface CurrentPrice {
@@ -241,17 +452,38 @@ export async function openPaperTrade(
   tokenOrSymbol: string,
   category: Category,
   fallbackPrice?: number | string,
-  fallbackPair?: any
-): Promise<void> {
-  if (!paperTradingEnabled) {
-    return;
+  fallbackPair?: any,
+  aiConfidence?: number
+): Promise<boolean> {
+  // 1. AI Confidence Threshold: Must be nothing less than 80% (0.80)
+  if (aiConfidence !== undefined && aiConfidence < MIN_AI_CONFIDENCE) {
+    console.log(`[paperTrading] Trade rejected for ${tokenOrSymbol}: AI confidence ${(aiConfidence * 100).toFixed(0)}% is below required 80% threshold.`);
+    return false;
   }
 
-  // Prevent duplicate open trades on the exact same token (< 0.01ms check)
+  // 2. Paper Trading Active Check
+  if (!paperTradingEnabled) {
+    return false;
+  }
+
+  // 3. Paper Wallet Check: Must be funded with positive available cash
+  const wallet = readPaperWallet();
+  if (!wallet.isFunded) {
+    console.log(`[paperTrading] Auto-trade skipped for ${tokenOrSymbol}: Paper wallet has not been funded yet. Use /fund <amount> to fund.`);
+    return false;
+  }
+
+  if (wallet.availableCash < currentPositionSize) {
+    console.warn(`[paperTrading] Insufficient paper wallet balance for ${tokenOrSymbol}: $${wallet.availableCash.toFixed(2)} available, $${currentPositionSize.toFixed(2)} needed.`);
+    sendTelegramMessage(`⚠️ *[PAPER WALLET DEPLETED]*\n\n• Available Cash: *$${wallet.availableCash.toFixed(2)} USD*\n• Required: *$${currentPositionSize.toFixed(2)} USD*\n\nSimulated trade for \`${tokenOrSymbol}\` was skipped. Use \`/fund <amount>\` to add funds.`).catch(() => {});
+    return false;
+  }
+
+  // 4. Duplicate Check
   const alreadyOpen = await isTradeAlreadyOpen(tokenOrSymbol);
   if (alreadyOpen) {
     console.log(`[paperTrading] Trade already open for ${tokenOrSymbol} - skipping duplicate.`);
-    return;
+    return false;
   }
 
   const fallbackPriceUsd = fallbackPrice ? (typeof fallbackPrice === "string" ? parseFloat(fallbackPrice) : fallbackPrice) : undefined;
@@ -267,7 +499,7 @@ export async function openPaperTrade(
 
   if (!current || !current.price || current.price <= 0) {
     console.warn(`[paperTrading] no price available for ${tokenOrSymbol} (${category}) - skipping paper trade.`);
-    return;
+    return false;
   }
 
   const stopLossPrice = current.price * (1 - STOP_LOSS_PCT / 100);
@@ -302,6 +534,12 @@ export async function openPaperTrade(
 
   // Add to active mints set immediately
   activeOpenMints.add(tokenOrSymbol);
+
+  // Deduct from paper wallet available cash and lock in allocated cash
+  wallet.availableCash = Math.max(0, wallet.availableCash - currentPositionSize);
+  wallet.allocatedCash += currentPositionSize;
+  wallet.totalTradesExecuted += 1;
+  writePaperWallet(wallet);
 
   // 1. Immediately persist locally (zero-latency resilient storage)
   saveTradeToLocalStore(tradeRecord);
@@ -340,24 +578,27 @@ export async function openPaperTrade(
     `• Token CA: \`${tokenOrSymbol}\`\n` +
     `• Strategy: \`${category}\`\n` +
     `• Entry Price: *${entryStr} ${current.quoteCurrency.toUpperCase()}*\n` +
-    `• Position Sizing: *$${currentPositionSize.toFixed(2)} ${current.quoteCurrency.toUpperCase()}* (Virtual Trade)\n` +
+    `• Trade Size: *$${currentPositionSize.toFixed(2)} USD* (Allocated from Paper Wallet)\n` +
+    `• Paper Wallet Available: *$${wallet.availableCash.toFixed(2)} USD*\n` +
     `• Stop-Loss (-${STOP_LOSS_PCT}%): *${stopStr}*\n` +
     `• Take-Profit (+${TAKE_PROFIT_PCT}%): *${targetStr}*\n` +
     `• Max Holding Window: *${MAX_HOLD_HOURS} hours*\n\n` +
-    `_Auto-executing live simulated trade. Real DEX prices tracked continuously._`;
+    `_Auto-executing live simulated trade with >= 80% AI confidence._`;
 
   const buttons = category !== "nft_watch" ? getTokenTradingButtons(tokenOrSymbol) : undefined;
-  const imageUrl = category !== "nft_watch" ? getTokenImageUrl(tokenOrSymbol, current.pair) : undefined;
+  const imageUrl = category !== "nft_watch" ? getTokenImageUrl(tokenOrSymbol, current.pair) : ZOOMA_BANNER_IMAGE;
 
   try {
-    if (imageUrl) {
-      await sendTelegramPhoto(imageUrl, message, buttons);
-    } else {
-      await sendTelegramMessage(message, buttons);
+    await sendTelegramPhoto(imageUrl, message, buttons);
+  } catch {
+    try {
+      await sendTelegramPhoto(ZOOMA_BANNER_IMAGE, message, buttons);
+    } catch {
+      await sendTelegramMessage(message, buttons).catch(() => {});
     }
-  } catch (err) {
-    console.warn("[paperTrading] trade open alert send error:", (err as Error).message);
   }
+
+  return true;
 }
 
 /**
@@ -369,6 +610,29 @@ export async function openManualPaperTrade(
   sizeUsd?: number
 ): Promise<void> {
   const positionSize = sizeUsd && sizeUsd > 0 ? sizeUsd : currentPositionSize;
+
+  const wallet = readPaperWallet();
+  if (!wallet.isFunded) {
+    await sendTelegramPhotoTo(
+      chatId,
+      ZOOMA_BANNER_IMAGE,
+      `💼 *[PAPER WALLET NOT FUNDED]*\n\n` +
+      `Before paper trading can begin, please fund the bot's paper wallet with a fixed amount.\n\n` +
+      `👉 *How much would you like to fund the bot with?*\n\n` +
+      `Usage: \`/fund <amount>\` (e.g. \`/fund 50\` or \`/fund 100\`)\n\n` +
+      `• Standard Trade Size: *$${positionSize.toFixed(2)} USD per trade*\n` +
+      `• Stop anytime with \`/stoppapertrade\` to see the exact profit made on your funded money!`
+    );
+    return;
+  }
+
+  if (wallet.availableCash < positionSize) {
+    await sendTelegramMessageTo(
+      chatId,
+      `⚠️ *[INSUFFICIENT PAPER WALLET FUNDS]*\n\n• Available Cash: *$${wallet.availableCash.toFixed(2)} USD*\n• Required: *$${positionSize.toFixed(2)} USD*\n\nPlease add funds using \`/fund <amount>\` (e.g. \`/fund 50\`).`
+    );
+    return;
+  }
 
   await sendTelegramMessageTo(chatId, `🔍 Fetching live DEX market pool for \`${tokenMint}\`...`);
 
@@ -415,6 +679,13 @@ export async function openManualPaperTrade(
   };
 
   activeOpenMints.add(tokenMint);
+
+  // Deduct from paper wallet available cash and lock into allocated cash
+  wallet.availableCash = Math.max(0, wallet.availableCash - positionSize);
+  wallet.allocatedCash += positionSize;
+  wallet.totalTradesExecuted += 1;
+  writePaperWallet(wallet);
+
   saveTradeToLocalStore(tradeRecord);
 
   asyncInsertToSupabase({
@@ -440,7 +711,8 @@ export async function openManualPaperTrade(
     `• Token CA: \`${tokenMint}\`\n` +
     `• Strategy: \`manual_entry\`\n` +
     `• Entry Price: *${entryStr} USD*\n` +
-    `• Position Sizing: *$${positionSize.toFixed(2)} USD* (Simulated)\n` +
+    `• Trade Size: *$${positionSize.toFixed(2)} USD* (Allocated from Paper Wallet)\n` +
+    `• Paper Wallet Available: *$${wallet.availableCash.toFixed(2)} USD*\n` +
     `• Stop-Loss (-${STOP_LOSS_PCT}%): *${stopStr}*\n` +
     `• Take-Profit (+${TAKE_PROFIT_PCT}%): *${targetStr}*\n` +
     `• Max Hold: *${MAX_HOLD_HOURS} hours*\n\n` +
@@ -449,10 +721,14 @@ export async function openManualPaperTrade(
   const buttons = getTokenTradingButtons(tokenMint);
   const imageUrl = getTokenImageUrl(tokenMint, pair);
 
-  if (imageUrl) {
+  try {
     await sendTelegramPhotoTo(chatId, imageUrl, message, buttons);
-  } else {
-    await sendTelegramMessageTo(chatId, message, buttons);
+  } catch {
+    try {
+      await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, message, buttons);
+    } catch {
+      await sendTelegramMessageTo(chatId, message, buttons).catch(() => {});
+    }
   }
 }
 
@@ -540,28 +816,52 @@ async function closeTrade(trade: OpenTrade, exitPrice: number, exitReason: strin
   const symbol = trade.token_symbol ?? trade.token_mint.slice(0, 8);
   const name = trade.token_name ?? symbol;
 
+  const finalPayout = Math.max(0, trade.position_size + pnlAbsolute);
+
+  // Credit funds back to paper wallet
+  const wallet = readPaperWallet();
+  wallet.allocatedCash = Math.max(0, wallet.allocatedCash - trade.position_size);
+  const payout = Math.max(0, trade.position_size + pnlAbsolute);
+  wallet.availableCash += payout;
+  wallet.totalRealizedPnl += pnlAbsolute;
+  writePaperWallet(wallet);
+
+  const sessionRoi = wallet.initialFundedAmount > 0 ? (wallet.totalRealizedPnl / wallet.initialFundedAmount) * 100 : 0;
+  const sessionSign = wallet.totalRealizedPnl >= 0 ? "+" : "";
+  const sessionIcon = wallet.totalRealizedPnl >= 0 ? "🟢" : "🔴";
+
+  const summary = getAllTimeProfitSummary();
+  const allTimeSign = summary.totalRealizedPnlUsd >= 0 ? "+" : "";
+  const allTimeIcon = summary.totalRealizedPnlUsd >= 0 ? "🟢" : "🔴";
+
   const message =
     `${emoji} *[PAPER TRADE: ${title}]*\n\n` +
     `*${name} ($${symbol})*\n` +
     `• Token CA: \`${trade.token_mint}\`\n` +
     `• Strategy: \`${trade.category}\`\n` +
     `• Entry: *${entryStr}* ➡️ Exit: *${exitStr}*\n` +
-    `• Realized Net PnL: *${pnlSign}${pnlPct.toFixed(1)}%* (*${pnlSign}$${pnlAbsolute.toFixed(2)} ${trade.quote_currency.toUpperCase()}*)\n` +
-    `• Modeled Fees: *$${fees.toFixed(2)}*\n` +
+    `• Starting Bet: *$${trade.position_size.toFixed(2)} USD*\n` +
+    `• Final Position Payout: *$${finalPayout.toFixed(2)} USD*\n` +
+    `• Net Money Made on Trade: *${pnlSign}$${pnlAbsolute.toFixed(2)} USD* (${pnlSign}${pnlPct.toFixed(1)}%)\n` +
+    `• Modeled Fees: *$${fees.toFixed(2)} USD*\n` +
     `• Exit Reason: \`${exitReason}\`\n\n` +
+    `💰 *Paper Wallet Capital & Returns:*\n` +
+    `• Available Cash Now: *$${wallet.availableCash.toFixed(2)} USD*\n` +
+    `• Session Profit on Funded Capital: *${sessionSign}$${wallet.totalRealizedPnl.toFixed(2)} USD* (${sessionSign}${sessionRoi.toFixed(1)}% ROI) ${sessionIcon}\n` +
+    `• Portfolio Win Rate: *${summary.totalWins} Wins / ${summary.totalLosses} Losses* (${summary.winRatePct.toFixed(0)}%)\n\n` +
     `_Simulated performance tracking net of modeled fees & slippage._`;
 
   const buttons = trade.category !== "nft_watch" ? getTokenTradingButtons(trade.token_mint) : undefined;
-  const imageUrl = trade.category !== "nft_watch" ? getTokenImageUrl(trade.token_mint) : undefined;
+  const imageUrl = trade.category !== "nft_watch" ? getTokenImageUrl(trade.token_mint) : ZOOMA_BANNER_IMAGE;
 
   try {
-    if (imageUrl) {
-      await sendTelegramPhoto(imageUrl, message, buttons);
-    } else {
-      await sendTelegramMessage(message, buttons);
-    }
+    await sendTelegramPhoto(imageUrl, message, buttons);
   } catch {
-    await sendTelegramMessage(message, buttons);
+    try {
+      await sendTelegramPhoto(ZOOMA_BANNER_IMAGE, message, buttons);
+    } catch {
+      await sendTelegramMessage(message, buttons).catch(() => {});
+    }
   }
 }
 
@@ -633,17 +933,29 @@ export async function checkOpenTrades(): Promise<void> {
         if (!milestoneAlertedTrades.has(`${trade.id}_shield`)) {
           milestoneAlertedTrades.add(`${trade.id}_shield`);
           const symbol = current.pair?.baseToken?.symbol ? `$${current.pair.baseToken.symbol}` : (trade.token_symbol ?? trade.token_mint.slice(0, 8));
+          const name = current.pair?.baseToken?.name ?? (trade.token_name ?? symbol);
           const currentStr = current.price < 0.01 ? `$${current.price.toFixed(6)}` : `$${current.price.toFixed(4)}`;
           const stopStr = trade.stop_loss_price < 0.01 ? `$${trade.stop_loss_price.toFixed(6)}` : `$${trade.stop_loss_price.toFixed(4)}`;
+          const currentVal = Math.max(0, trade.position_size + pnlAbsolute);
+          const pnlSign = pnlAbsolute >= 0 ? "+" : "";
           const shieldMsg =
             `🛡️ *[BREAKEVEN SHIELD ACTIVATED]*\n\n` +
-            `*${symbol}* surged to *+${pnlPct.toFixed(1)}%* profit!\n` +
+            `*${name} (${symbol})*\n` +
             `• Token CA: \`${trade.token_mint}\`\n` +
+            `• Starting Bet: *$${trade.position_size.toFixed(2)} USD*\n` +
+            `• Current Position Value: *$${currentVal.toFixed(2)} USD*\n` +
+            `• Money Made So Far: *${pnlSign}$${pnlAbsolute.toFixed(2)} USD* (+${pnlPct.toFixed(1)}%)\n` +
             `• Current Price: *${currentStr}* (Entry: *$${trade.entry_price.toFixed(4)}*)\n` +
             `• Stop-Loss Ratcheted To: *${stopStr}* (+5.0% profit locked)\n` +
-            `• Downside risk eliminated. Capital is 100% protected.\n` +
+            `• Capital 100% protected against drawdown.\n` +
             `• Progress: ${renderProgressBar(pnlPct, TAKE_PROFIT_PCT)}`;
-          sendTelegramMessage(shieldMsg, getTokenTradingButtons(trade.token_mint)).catch(() => {});
+          const imageUrl = getTokenImageUrl(trade.token_mint, current.pair);
+          const buttons = getTokenTradingButtons(trade.token_mint);
+          try {
+            await sendTelegramPhoto(imageUrl, shieldMsg, buttons);
+          } catch {
+            await sendTelegramPhoto(ZOOMA_BANNER_IMAGE, shieldMsg, buttons).catch(() => {});
+          }
         }
       }
 
@@ -672,33 +984,55 @@ export async function checkOpenTrades(): Promise<void> {
       if (pnlPct >= 20 && !milestoneAlertedTrades.has(`${trade.id}_20`)) {
         milestoneAlertedTrades.add(`${trade.id}_20`);
         const symbol = current.pair?.baseToken?.symbol ? `$${current.pair.baseToken.symbol}` : (trade.token_symbol ?? trade.token_mint.slice(0, 8));
+        const name = current.pair?.baseToken?.name ?? (trade.token_name ?? symbol);
         const currentStr = current.price < 0.01 ? `$${current.price.toFixed(6)}` : `$${current.price.toFixed(4)}`;
+        const currentVal = Math.max(0, trade.position_size + pnlAbsolute);
+        const pnlSign = pnlAbsolute >= 0 ? "+" : "";
         const msg =
           `🚀 *[PAPER TRADE PROGRESS: +${pnlPct.toFixed(1)}% GAIN]*\n\n` +
-          `• Token: *${symbol}*\n` +
-          `• CA: \`${trade.token_mint}\`\n` +
+          `*${name} (${symbol})*\n` +
+          `• Token CA: \`${trade.token_mint}\`\n` +
+          `• Starting Bet: *$${trade.position_size.toFixed(2)} USD*\n` +
+          `• Current Position Value: *$${currentVal.toFixed(2)} USD*\n` +
+          `• Money Made So Far: *${pnlSign}$${pnlAbsolute.toFixed(2)} USD* (+${pnlPct.toFixed(1)}%)\n` +
           `• Current Price: *${currentStr}* (Entry: *$${trade.entry_price.toFixed(4)}*)\n` +
-          `• Unrealized Profit: *+$${pnlAbsolute.toFixed(2)} USD* (+${pnlPct.toFixed(1)}%)\n` +
           `• Progress: ${renderProgressBar(pnlPct, TAKE_PROFIT_PCT)}\n` +
           `• Target Remaining: *${(TAKE_PROFIT_PCT - pnlPct).toFixed(1)}%* to Target Exit (+${TAKE_PROFIT_PCT}%)\n\n` +
           `_Running live tracking. Take-profit will auto-execute when reached._`;
-        sendTelegramMessage(msg, getTokenTradingButtons(trade.token_mint)).catch(() => {});
+        const imageUrl = getTokenImageUrl(trade.token_mint, current.pair);
+        const buttons = getTokenTradingButtons(trade.token_mint);
+        try {
+          await sendTelegramPhoto(imageUrl, msg, buttons);
+        } catch {
+          await sendTelegramPhoto(ZOOMA_BANNER_IMAGE, msg, buttons).catch(() => {});
+        }
       }
 
       // Milestone gain alert (+35%)
       if (pnlPct >= 35 && !milestoneAlertedTrades.has(`${trade.id}_35`)) {
         milestoneAlertedTrades.add(`${trade.id}_35`);
         const symbol = current.pair?.baseToken?.symbol ? `$${current.pair.baseToken.symbol}` : (trade.token_symbol ?? trade.token_mint.slice(0, 8));
+        const name = current.pair?.baseToken?.name ?? (trade.token_name ?? symbol);
         const currentStr = current.price < 0.01 ? `$${current.price.toFixed(6)}` : `$${current.price.toFixed(4)}`;
+        const currentVal = Math.max(0, trade.position_size + pnlAbsolute);
+        const pnlSign = pnlAbsolute >= 0 ? "+" : "";
         const msg =
           `⚡ *[PAPER TRADE SURGE: +${pnlPct.toFixed(1)}% PROFIT]*\n\n` +
-          `• Token: *${symbol}*\n` +
-          `• CA: \`${trade.token_mint}\`\n` +
+          `*${name} (${symbol})*\n` +
+          `• Token CA: \`${trade.token_mint}\`\n` +
+          `• Starting Bet: *$${trade.position_size.toFixed(2)} USD*\n` +
+          `• Current Position Value: *$${currentVal.toFixed(2)} USD*\n` +
+          `• Money Made So Far: *${pnlSign}$${pnlAbsolute.toFixed(2)} USD* (+${pnlPct.toFixed(1)}%)\n` +
           `• Current Price: *${currentStr}*\n` +
-          `• Profit: *+$${pnlAbsolute.toFixed(2)} USD* (+${pnlPct.toFixed(1)}%)\n` +
           `• Progress: ${renderProgressBar(pnlPct, TAKE_PROFIT_PCT)}\n` +
           `• Approaching target exit: *${(TAKE_PROFIT_PCT - pnlPct).toFixed(1)}%* remaining.`;
-        sendTelegramMessage(msg, getTokenTradingButtons(trade.token_mint)).catch(() => {});
+        const imageUrl = getTokenImageUrl(trade.token_mint, current.pair);
+        const buttons = getTokenTradingButtons(trade.token_mint);
+        try {
+          await sendTelegramPhoto(imageUrl, msg, buttons);
+        } catch {
+          await sendTelegramPhoto(ZOOMA_BANNER_IMAGE, msg, buttons).catch(() => {});
+        }
       }
 
       if (trade.stop_loss_price !== null && current.price <= trade.stop_loss_price) {
@@ -772,6 +1106,7 @@ export async function sendPositionsPhotoCards(chatId: string): Promise<void> {
 
     const entryStr = trade.entry_price < 0.01 ? `$${trade.entry_price.toFixed(6)}` : `$${trade.entry_price.toFixed(4)}`;
     let currentStr = "Fetching...";
+    let valueLine = "";
     let pnlLine = "";
     let progressLine = "";
     let shieldLine = "";
@@ -781,7 +1116,9 @@ export async function sendPositionsPhotoCards(chatId: string): Promise<void> {
       const { pnlPct, pnlAbsolute } = computePnl(trade.entry_price, current.price, trade.position_size);
       const icon = pnlPct >= 0 ? "🟢" : "🔴";
       const sign = pnlPct >= 0 ? "+" : "";
-      pnlLine = `\n• Unrealized PnL: *${sign}${pnlPct.toFixed(1)}%* (${sign}$${pnlAbsolute.toFixed(2)} USD) ${icon}`;
+      const currentVal = Math.max(0, trade.position_size + pnlAbsolute);
+      valueLine = `\n• Current Value: *$${currentVal.toFixed(2)} USD*`;
+      pnlLine = `\n• Money Made So Far: *${sign}$${pnlAbsolute.toFixed(2)} USD* (${sign}${pnlPct.toFixed(1)}%) ${icon}`;
       progressLine = `\n• Target Progress: ${renderProgressBar(pnlPct, TAKE_PROFIT_PCT)}`;
       if (trade.breakeven_locked) {
         shieldLine = `\n• Protection: 🛡️ *Breakeven Shield Active* (+5% locked)`;
@@ -798,15 +1135,16 @@ export async function sendPositionsPhotoCards(chatId: string): Promise<void> {
     const caption =
       `💼 *[ACTIVE POSITION #${i + 1} | ${name}]*\n\n` +
       `• Token: *${symbol}*\n` +
-      `• CA: \`${trade.token_mint}\`\n` +
+      `• Token CA: \`${trade.token_mint}\`\n` +
       `• Strategy: \`${trade.category}\`\n` +
+      `• Starting Bet: *$${trade.position_size.toFixed(2)} USD*\n` +
       `• Entry Price: *${entryStr}*\n` +
       `• Current Price: *${currentStr}*` +
+      valueLine +
       pnlLine +
       progressLine +
       shieldLine +
-      `\n• Position Size: *$${trade.position_size.toFixed(2)} USD* (Simulated)\n` +
-      `• Stop-Loss: *${stopStr}*\n` +
+      `\n• Stop-Loss: *${stopStr}*\n` +
       `• Take-Profit (+${TAKE_PROFIT_PCT}%): *${targetStr}*\n\n` +
       `⚡ *Trade Fast on Terminals:*`;
 
@@ -816,7 +1154,11 @@ export async function sendPositionsPhotoCards(chatId: string): Promise<void> {
     try {
       await sendTelegramPhotoTo(chatId, imageUrl, caption, buttons);
     } catch {
-      await sendTelegramMessageTo(chatId, caption, buttons);
+      try {
+        await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, caption, buttons);
+      } catch {
+        await sendTelegramMessageTo(chatId, caption, buttons);
+      }
     }
   }
 
@@ -885,16 +1227,31 @@ export async function closePaperTradeManually(chatId: string, tokenMint?: string
   const { pnlPct, pnlAbsolute } = computePnl(trade.entry_price, exitPrice, trade.position_size);
   const sign = pnlPct >= 0 ? "+" : "";
   const symbol = trade.token_symbol ?? trade.token_mint.slice(0, 8);
+  const name = trade.token_name ?? symbol;
+  const finalPayout = Math.max(0, trade.position_size + pnlAbsolute);
 
-  await sendTelegramMessageTo(
-    chatId,
+  const confirmMsg =
     `✅ *[MANUAL POSITION CLOSED]*\n\n` +
-    `*${symbol}* closed at live DEX market price.\n` +
+    `*${name} ($${symbol})*\n` +
     `• Token CA: \`${trade.token_mint}\`\n` +
-    `• Exit Price: *$${exitPrice < 0.01 ? exitPrice.toFixed(6) : exitPrice.toFixed(4)}*\n` +
-    `• Realized Net PnL: *${sign}${pnlPct.toFixed(1)}%* (${sign}$${pnlAbsolute.toFixed(2)} USD)\n\n` +
-    `_Check /history to review all closed trades or /positions for remaining open positions._`
-  );
+    `• Starting Bet: *$${trade.position_size.toFixed(2)} USD*\n` +
+    `• Final Payout: *$${finalPayout.toFixed(2)} USD*\n` +
+    `• Realized Net PnL: *${sign}$${pnlAbsolute.toFixed(2)} USD* (${sign}${pnlPct.toFixed(1)}%)\n` +
+    `• Exit Price: *$${exitPrice < 0.01 ? exitPrice.toFixed(6) : exitPrice.toFixed(4)}*\n\n` +
+    `_Check /history to review all closed trades or /positions for remaining open positions._`;
+
+  const imageUrl = getTokenImageUrl(trade.token_mint);
+  const buttons = getTokenTradingButtons(trade.token_mint);
+
+  try {
+    await sendTelegramPhotoTo(chatId, imageUrl, confirmMsg, buttons);
+  } catch {
+    try {
+      await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, confirmMsg, buttons);
+    } catch {
+      await sendTelegramMessageTo(chatId, confirmMsg, buttons).catch(() => {});
+    }
+  }
 }
 
 /**
@@ -934,19 +1291,19 @@ export async function sendTradeHistory(chatId: string): Promise<void> {
     return;
   }
 
-  const displayList = closedTrades.slice(0, 8);
-  let text = `📜 *[RECENT PAPER TRADE HISTORY]*\n` +
-             `_Displaying last ${displayList.length} of ${closedTrades.length} closed trades:_\n\n`;
-
-  for (let i = 0; i < displayList.length; i++) {
-    const t = displayList[i];
+  // Send photo cards for top 3 recent closed trades with token image and exact payout breakdown
+  const photoTrades = closedTrades.slice(0, 3);
+  for (let i = 0; i < photoTrades.length; i++) {
+    const t = photoTrades[i];
     const pnl = Number(t.pnl_pct ?? 0);
     const pnlAbs = Number(t.pnl_absolute ?? 0);
     const sign = pnl >= 0 ? "+" : "";
     const icon = pnl > 0 ? "🟢" : pnl < 0 ? "🔴" : "⚪";
     const symbol = t.token_symbol ?? t.token_mint.slice(0, 8);
+    const name = t.token_name ?? symbol;
     const entryStr = t.entry_price < 0.01 ? `$${t.entry_price.toFixed(6)}` : `$${t.entry_price.toFixed(4)}`;
     const exitStr = t.exit_price ? (t.exit_price < 0.01 ? `$${t.exit_price.toFixed(6)}` : `$${t.exit_price.toFixed(4)}`) : "n/a";
+    const finalPayout = Math.max(0, t.position_size + pnlAbs);
 
     let reasonTag = t.exit_reason ?? "closed";
     if (reasonTag === "target") reasonTag = "Take-Profit (+50%)";
@@ -955,18 +1312,155 @@ export async function sendTradeHistory(chatId: string): Promise<void> {
     else if (reasonTag === "manual_close" || reasonTag === "manual_close_all") reasonTag = "Manual Exit";
     else if (reasonTag === "time_exit") reasonTag = "Time Window (48h)";
 
-    text += `${i + 1}. ${icon} *${symbol}* (\`${t.token_mint.slice(0, 4)}...${t.token_mint.slice(-4)}\`)\n`;
-    text += `   • Net PnL: *${sign}${pnl.toFixed(1)}%* (${sign}$${pnlAbs.toFixed(2)} USD)\n`;
-    text += `   • Entry: *${entryStr}* ➡️ Exit: *${exitStr}*\n`;
-    text += `   • Reason: \`${reasonTag}\` | Strategy: \`${t.category}\`\n\n`;
+    const cardCaption =
+      `📜 *[CLOSED TRADE #${i + 1} | ${name}]*\n\n` +
+      `• Token: *${name} ($${symbol})*\n` +
+      `• Token CA: \`${t.token_mint}\`\n` +
+      `• Starting Bet: *$${t.position_size.toFixed(2)} USD*\n` +
+      `• Final Payout: *$${finalPayout.toFixed(2)} USD*\n` +
+      `• Net Money Made: *${sign}$${pnlAbs.toFixed(2)} USD* (${sign}${pnl.toFixed(1)}%) ${icon}\n` +
+      `• Entry: *${entryStr}* ➡️ Exit: *${exitStr}*\n` +
+      `• Exit Reason: \`${reasonTag}\` | Strategy: \`${t.category}\`\n\n` +
+      `⚡ *Trade Token on Terminal:*`;
+
+    const imageUrl = getTokenImageUrl(t.token_mint);
+    const buttons = getTokenTradingButtons(t.token_mint);
+
+    try {
+      await sendTelegramPhotoTo(chatId, imageUrl, cardCaption, buttons);
+    } catch {
+      try {
+        await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, cardCaption, buttons);
+      } catch {
+        await sendTelegramMessageTo(chatId, cardCaption, buttons).catch(() => {});
+      }
+    }
   }
 
-  const wins = closedTrades.filter((t) => Number(t.pnl_pct ?? 0) > 0).length;
-  const winRate = ((wins / closedTrades.length) * 100).toFixed(0);
-  text += `📊 *Summary:* ${wins} Wins / ${closedTrades.length - wins} Losses (${winRate}% Win Rate)\n` +
-          `_Use /positions to see active trades, or /pnl for complete analytics._`;
+  // Summary message of overall history
+  const summary = getAllTimeProfitSummary();
+  const allTimeSign = summary.totalRealizedPnlUsd >= 0 ? "+" : "";
+  const allTimeIcon = summary.totalRealizedPnlUsd >= 0 ? "🟢" : "🔴";
 
-  await sendTelegramMessageTo(chatId, text);
+  let text = `📜 *[PAPER TRADE HISTORY SUMMARY]*\n\n` +
+             `• Total Closed Trades: *${closedTrades.length}*\n` +
+             `• All-Time Money Made: *${allTimeSign}$${summary.totalRealizedPnlUsd.toFixed(2)} USD* ${allTimeIcon}\n` +
+             `• Win Rate: *${summary.totalWins} Wins / ${summary.totalLosses} Losses* (${summary.winRatePct.toFixed(0)}%)\n`;
+
+  if (summary.bestWinner) {
+    text += `• Best Winner: *+$${summary.bestWinner.pnlUsd.toFixed(2)} USD* (+${summary.bestWinner.pnlPct.toFixed(1)}%) on $${summary.bestWinner.symbol}\n`;
+  }
+
+  text += `\n*Recent Closed Trades (Quick List):*\n`;
+  const quickList = closedTrades.slice(0, 6);
+  for (let i = 0; i < quickList.length; i++) {
+    const t = quickList[i];
+    const pnl = Number(t.pnl_pct ?? 0);
+    const pnlAbs = Number(t.pnl_absolute ?? 0);
+    const sign = pnl >= 0 ? "+" : "";
+    const icon = pnl > 0 ? "🟢" : pnl < 0 ? "🔴" : "⚪";
+    const symbol = t.token_symbol ?? t.token_mint.slice(0, 8);
+    const finalPayout = Math.max(0, t.position_size + pnlAbs);
+
+    text += `${i + 1}. ${icon} *${symbol}* (\`${t.token_mint.slice(0, 4)}...${t.token_mint.slice(-4)}\`)\n`;
+    text += `   • Bet: *$${t.position_size.toFixed(2)}* ➡️ Payout: *$${finalPayout.toFixed(2)} USD*\n`;
+    text += `   • Net Made: *${sign}$${pnlAbs.toFixed(2)} USD* (${sign}${pnl.toFixed(1)}%)\n`;
+  }
+
+  text += `\n_Use /balance to see full portfolio earnings, or /positions for open trades._`;
+
+  const topButtons = quickList.slice(0, 2).map((t) => [
+    { text: `⚡ Photon (${t.token_symbol ?? "Token"})`, url: `https://photon-sol.tinyastro.io/en/lp/${t.token_mint}` },
+    { text: `🐂 BullX`, url: `https://neo.bullx.io/terminal?chainId=1399811149&address=${t.token_mint}` },
+  ]);
+
+  await sendTelegramMessageTo(chatId, text, topButtons.length > 0 ? topButtons : undefined);
+}
+
+/**
+ * Sends a comprehensive earnings & portfolio balance breakdown showing all money made with $2 allocations.
+ */
+export async function sendPaperBalancePhoto(chatId: string): Promise<void> {
+  const wallet = readPaperWallet();
+  const summary = getAllTimeProfitSummary();
+  const openTrades = await getOpenPaperTrades();
+
+  let openInvested = 0;
+  let openCurrentValue = 0;
+  let openUnrealizedPnl = 0;
+  let openWinners = 0;
+  let openLosers = 0;
+
+  for (const t of openTrades) {
+    openInvested += t.position_size;
+    const current = await getCurrentPrice(t.token_mint, t.category);
+    if (current) {
+      const { pnlAbsolute } = computePnl(tradeEntrySafe(t.entry_price), current.price, t.position_size);
+      openCurrentValue += Math.max(0, t.position_size + pnlAbsolute);
+      openUnrealizedPnl += pnlAbsolute;
+      if (pnlAbsolute >= 0) openWinners++;
+      else openLosers++;
+    } else {
+      openCurrentValue += t.position_size;
+    }
+  }
+
+  const totalWalletVal = wallet.availableCash + openCurrentValue;
+  const netProfitUsd = totalWalletVal - wallet.initialFundedAmount;
+  const roiPct = wallet.initialFundedAmount > 0 ? (netProfitUsd / wallet.initialFundedAmount) * 100 : 0;
+  const sign = netProfitUsd >= 0 ? "+" : "";
+  const icon = netProfitUsd >= 0 ? "🟢" : "🔴";
+  const realizedSign = wallet.totalRealizedPnl >= 0 ? "+" : "";
+  const realizedIcon = wallet.totalRealizedPnl >= 0 ? "🟢" : "🔴";
+  const unrealizedSign = openUnrealizedPnl >= 0 ? "+" : "";
+
+  let bestWinnerLine = "";
+  if (summary.bestWinner) {
+    bestWinnerLine = `• Best Winning Trade: *+$${summary.bestWinner.pnlUsd.toFixed(2)} USD* (+${summary.bestWinner.pnlPct.toFixed(1)}%) on *$${summary.bestWinner.symbol}*\n`;
+  }
+
+  const statusText = paperTradingEnabled ? "🟢 ACTIVE (Auto-Trading on alerts with >= 80% AI confidence)" : "🛑 PAUSED / STOPPED";
+
+  const caption =
+    `💰 *[PAPER WALLET & PORTFOLIO BALANCE]*\n\n` +
+    `💵 *Funded Capital & Money Made:*\n` +
+    `• Initial Funded Capital: *$${wallet.initialFundedAmount.toFixed(2)} USD*\n` +
+    `• Total Paper Wallet Valuation: *$${totalWalletVal.toFixed(2)} USD*\n` +
+    `• Net Profit on Funded Capital: *${sign}$${netProfitUsd.toFixed(2)} USD* (${sign}${roiPct.toFixed(1)}% ROI) ${icon}\n\n` +
+    `📊 *Wallet Balances:*\n` +
+    `• Available Cash: *$${wallet.availableCash.toFixed(2)} USD*\n` +
+    `• Active Open Position Value: *$${openCurrentValue.toFixed(2)} USD* (${openTrades.length} open)\n` +
+    `• Realized Cash Made (Closed): *${realizedSign}$${wallet.totalRealizedPnl.toFixed(2)} USD* ${realizedIcon}\n` +
+    `• Unrealized Profit (Active): *${unrealizedSign}$${openUnrealizedPnl.toFixed(2)} USD*\n\n` +
+    `📈 *Performance Statistics:*\n` +
+    `• Standard Trade Size: *$${currentPositionSize.toFixed(2)} USD per trade*\n` +
+    `• Session Trades Executed: *${wallet.totalTradesExecuted} trades*\n` +
+    `• Closed Positions: *${summary.totalClosed}* (${summary.totalWins} Wins / ${summary.totalLosses} Losses)\n` +
+    `• Realized Win Rate: *${summary.winRatePct.toFixed(1)}%*\n` +
+    bestWinnerLine +
+    `\n⚡ *Bot Status:* ${statusText}\n\n` +
+    `_Auto-trading trades on alerts with >= 80% AI confidence and Breakeven Shield protection._`;
+
+  const buttons = [
+    [
+      { text: "⚡ Photon Terminal", url: "https://photon-sol.tinyastro.io" },
+      { text: "🐂 BullX Terminal", url: "https://neo.bullx.io" },
+    ],
+    [
+      { text: "📊 GMGN AI", url: "https://gmgn.ai/sol" },
+      { text: "📈 DexScreener", url: "https://dexscreener.com/solana" },
+    ],
+  ];
+
+  try {
+    await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, caption, buttons);
+  } catch {
+    await sendTelegramMessageTo(chatId, caption, buttons);
+  }
+}
+
+function tradeEntrySafe(entry: number): number {
+  return entry > 0 ? entry : 0.000001;
 }
 
 /**

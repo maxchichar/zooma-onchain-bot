@@ -207,7 +207,7 @@ async function handleWhaleBuy(leg: ParsedLeg): Promise<void> {
   }).catch(() => {});
 
   try {
-    await openPaperTrade(signal.id, leg.mint, "whale_entry", pair?.priceUsd ? Number(pair.priceUsd) : undefined, pair);
+    await openPaperTrade(signal.id, leg.mint, "whale_entry", pair?.priceUsd ? Number(pair.priceUsd) : undefined, pair, 0.90);
   } catch (err) {
     console.error("[signalEngine] paper trade error for whale buy:", (err as Error).message);
   }
@@ -277,7 +277,8 @@ async function fireSignal(
   // instead of just "did the pattern match." Best-effort: a failure here
   // must never affect the signal itself, which is already recorded.
   try {
-    await openPaperTrade(signal.id, tokenMint, "wallet_pattern", pair?.priceUsd ? Number(pair.priceUsd) : undefined, pair);
+    const aiConfidence = jevRead?.confidence ?? 0.85;
+    await openPaperTrade(signal.id, tokenMint, "wallet_pattern", pair?.priceUsd ? Number(pair.priceUsd) : undefined, pair, aiConfidence);
   } catch (err) {
     console.error("[signalEngine] failed to open paper trade:", (err as Error).message);
   }

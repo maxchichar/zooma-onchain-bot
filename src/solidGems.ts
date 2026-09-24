@@ -203,7 +203,8 @@ export async function fireSolidGemAlert(gem: SolidGemCandidate): Promise<void> {
   await sendTelegramPhoto(imageUrl, message, getTokenTradingButtons(gem.tokenAddress));
 
   try {
-    await openPaperTrade(signal.id, gem.tokenAddress, "solid_gem", gem.priceUsd, gem.pair);
+    const aiConfidence = Math.max(0.80, (100 - gem.rugAssessment.riskScore) / 100);
+    await openPaperTrade(signal.id, gem.tokenAddress, "solid_gem", gem.priceUsd, gem.pair, aiConfidence);
   } catch (err) {
     console.error("[solidGems] paper trade failed:", (err as Error).message);
   }
