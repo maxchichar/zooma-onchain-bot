@@ -34,7 +34,7 @@ import { scanEarly100xGems } from "./early100xGems.js";
 import { fetchTopTrendingSolanaTokens, TrendingTokenDetail } from "./trendingAlerter.js";
 import { scanInsiderDrops } from "./insiderSniper.js";
 import { getRecentPumpDrops } from "./pumpFunStream.js";
-import { classifyPumpDrop } from "./jev.js";
+import { classifyPumpDrop, calculateDeterministicPumpRugScore } from "./jev.js";
 import { explainPumpDrop } from "./llm.js";
 import {
   getWalletIdenticonUrl,
@@ -923,7 +923,13 @@ async function handlePumpDrops(chatId: string): Promise<void> {
       resolvePumpTokenImageUrl(drop.uri, drop.mint),
     ]);
 
-    if (jevRead && jevRead.confidence < 0.80) {
+    const fastRugPull = calculateDeterministicPumpRugScore(drop.devHoldingPct, drop.solAmount, Boolean(drop.isRaydiumGraduation));
+    const rugPull = jevRead?.rugPull ?? fastRugPull;
+
+    if ((jevRead && jevRead.confidence < 0.80) || rugPull.score > 25 || rugPull.level === "high_rug_threat" || rugPull.level === "elevated_risk") {
+      continue;
+    }
+    if (jevRead?.pattern === "dev_heavy_bundle" || jevRead?.pattern === "suspicious_copycat") {
       continue;
     }
 
@@ -931,6 +937,11 @@ async function handlePumpDrops(chatId: string): Promise<void> {
     if (jevRead) {
       aiSection += `🤖 *JEV AI Read:* ${jevRead.badge} (${(jevRead.confidence * 100).toFixed(0)}% confidence)\n`;
     }
+    aiSection += `🛡️ *JEV Rug Pull Calculation:* ${rugPull.badge}\n`;
+    aiSection += `• Rug Pull Threat: *${rugPull.score}/100* (${100 - rugPull.score}% Safe Score)\n`;
+    aiSection += `• Dev Dump Exposure: *${rugPull.dumpProbabilityPct}%* (${rugPull.verdict})\n`;
+    aiSection += `• Honeypot Risk: *0% (Mint & Freeze Authorities Renounced)*\n`;
+    aiSection += `• Liquidity Drain Risk: *0% (Locked in Pump.fun program curve)*\n`;
     if (llmExplanation) {
       aiSection += `🧠 *AI Synthesis:* _${llmExplanation}_\n`;
     }

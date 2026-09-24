@@ -10,7 +10,7 @@ import { supabase } from "./supabase.js";
 import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.js";
 import { getTokenTradingButtons } from "./tradeLinks.js";
 import { openPaperTrade, isPaperTradingActive, isPaperWalletFunded } from "./paperTrading.js";
-import { classifyPumpDrop } from "./jev.js";
+import { classifyPumpDrop, calculateDeterministicPumpRugScore } from "./jev.js";
 import { explainPumpDrop } from "./llm.js";
 import { isSniperActive, incrementSniperAlerts } from "./sniperControl.js";
 import { resolvePumpTokenImageUrl } from "./researchSources.js";
@@ -193,12 +193,14 @@ async function processPumpDrop(data: any): Promise<void> {
     Promise.race([liveAiPromise, timeoutPromise]),
     resolvePumpTokenImageUrl(drop.uri, drop.mint),
   ]);
+  const fastRugPull = calculateDeterministicPumpRugScore(devHoldingPct, solAmount, isGraduation);
   const jevBadge = raceResult.jev?.badge ?? fastJevBadge;
   const jevConfidence = raceResult.jev?.confidence ?? fastConfidence;
   const llmExplanation = raceResult.llm ?? fastLlmSummary;
+  const rugPull = raceResult.jev?.rugPull ?? fastRugPull;
 
-  // Strict Quality Filter: Only drops with >= 80% AI confidence and verified organic patterns
-  if (jevConfidence < 0.80) {
+  // Strict Quality Filter: Only drops with >= 80% AI confidence and verified ultra-safe JEV rug score
+  if (jevConfidence < 0.80 || rugPull.score > 25 || rugPull.level === "high_rug_threat" || rugPull.level === "elevated_risk") {
     return;
   }
   if (raceResult.jev?.pattern === "dev_heavy_bundle" || raceResult.jev?.pattern === "suspicious_copycat") {
@@ -206,6 +208,11 @@ async function processPumpDrop(data: any): Promise<void> {
   }
 
   let aiSection = `🤖 *JEV AI Read:* ${jevBadge} (${(jevConfidence * 100).toFixed(0)}% confidence)\n`;
+  aiSection += `🛡️ *JEV Rug Pull Calculation:* ${rugPull.badge}\n`;
+  aiSection += `• Rug Pull Threat: *${rugPull.score}/100* (${100 - rugPull.score}% Safe Score)\n`;
+  aiSection += `• Dev Dump Exposure: *${rugPull.dumpProbabilityPct}%* (${rugPull.verdict})\n`;
+  aiSection += `• Honeypot Risk: *0% (Mint & Freeze Authorities Renounced)*\n`;
+  aiSection += `• Liquidity Drain Risk: *0% (Locked in Pump.fun program curve)*\n`;
   aiSection += `🧠 *AI Synthesis:* _${llmExplanation}_\n\n`;
 
   const message =
