@@ -217,9 +217,11 @@ async function processPumpDrop(data: any): Promise<void> {
   aiSection += `🛡️ *JEV Rug Pull Calculation:* ${rugPull.badge}\n`;
   aiSection += `• Rug Pull Threat: *${rugPull.score}/100* (${100 - rugPull.score}% Safe Score)\n`;
   aiSection += `• Dev Dump Exposure: *${rugPull.dumpProbabilityPct}%* (${rugPull.verdict})\n`;
-  aiSection += `• Honeypot Risk: *0% (Mint & Freeze Authorities Renounced)*\n`;
-  aiSection += `• Liquidity Drain Risk: *0% (Locked in Pump.fun program curve)*\n`;
-  aiSection += `🧠 *AI Synthesis:* _${llmExplanation}_\n\n`;
+  aiSection += `• Safety: ✅ Mint & Freeze Renounced | Curve Locked\n`;
+  if (llmExplanation) {
+    aiSection += `🧠 *AI Synthesis:* _${llmExplanation.slice(0, 160)}_\n`;
+  }
+  aiSection += "\n";
 
   const message =
     `${eventTitle}\n\n` +
@@ -231,10 +233,6 @@ async function processPumpDrop(data: any): Promise<void> {
     `• Initial Valuation: *~${marketCapSol.toFixed(1)} SOL* (Early micro-entry)\n` +
     `• Dev Wallet: \`${drop.traderPublicKey ? drop.traderPublicKey.slice(0, 6) + "..." + drop.traderPublicKey.slice(-4) : "Anonymous"}\`\n\n` +
     aiSection +
-    `🛡️ *Contract Safety Fundamentals:*\n` +
-    `• Mint Authority: ✅ Renounced (Pump.fun program enforced)\n` +
-    `• Freeze Authority: ✅ Renounced (No blacklist possible)\n` +
-    `• Liquidity: ✅ On Bonding Curve (${isGraduation ? "Graduated to Raydium" : "Pre-migration stage"})\n\n` +
     `⚡ *Execute sub-second trade on fastest terminal:*`;
 
   const buttons = getTokenTradingButtons(drop.mint);

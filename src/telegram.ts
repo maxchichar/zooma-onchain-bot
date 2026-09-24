@@ -124,6 +124,17 @@ async function sendPhotoViaFormData(
   });
 }
 
+export function fitTelegramCaption(text: string, maxLen: number = 1020): string {
+  if (!text || text.length <= maxLen) return text;
+  // Truncate cleanly at a line break before limit
+  const slice = text.slice(0, maxLen - 3);
+  const lastLine = slice.lastIndexOf("\n");
+  if (lastLine > maxLen * 0.7) {
+    return slice.slice(0, lastLine) + "\n...";
+  }
+  return slice + "...";
+}
+
 async function rawSendPhoto(chatId: string, photoSource: string, captionText: string, buttons?: TelegramButton[][]): Promise<number[]> {
   const sentMessageIds: number[] = [];
   if (!BOT_TOKEN) {
@@ -140,9 +151,8 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
     : path.resolve(process.cwd(), photoSource);
   const isLocalFile = fs.existsSync(localPath);
 
-  // If caption is too long for Telegram (limit 1024), send photo with first line, then full text
-  const isCaptionTooLong = captionText.length > 1020;
-  const photoCaption = isCaptionTooLong ? captionText.split("\n")[0] : captionText;
+  // Always keep photo and text body joined together in ONE single message
+  const photoCaption = fitTelegramCaption(captionText);
 
   const extractMessageId = async (res: Response) => {
     try {
@@ -152,10 +162,6 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
       }
     } catch {
       // non-blocking
-    }
-    if (isCaptionTooLong) {
-      const extraId = await rawSend(chatId, captionText, buttons);
-      if (extraId) sentMessageIds.push(extraId);
     }
   };
 
@@ -168,7 +174,7 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
         fileBuffer,
         filename,
         photoCaption,
-        !isCaptionTooLong ? replyMarkup : undefined
+        replyMarkup
       );
       if (res.ok) {
         await extractMessageId(res);
@@ -186,7 +192,7 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
               new Uint8Array(arrayBuffer),
               "token.jpg",
               photoCaption,
-              !isCaptionTooLong ? replyMarkup : undefined
+              replyMarkup
             );
             if (res.ok) {
               await extractMessageId(res);
@@ -206,7 +212,7 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
           chat_id: chatId,
           photo: photoSource,
           ...(photoCaption ? { caption: photoCaption, parse_mode: "Markdown" } : {}),
-          ...((!isCaptionTooLong && replyMarkup) ? { reply_markup: replyMarkup } : {}),
+          ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
         }),
       });
 
@@ -216,7 +222,7 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
       }
     }
 
-    // High reliability fallback: send official local ZOOMA banner photo
+    // High reliability fallback: send official local ZOOMA banner photo with full caption and buttons
     if (fs.existsSync(DEFAULT_LOCAL_BANNER)) {
       const bannerBuffer = fs.readFileSync(DEFAULT_LOCAL_BANNER);
       const res = await sendPhotoViaFormData(
@@ -224,7 +230,7 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
         bannerBuffer,
         "zooma_logo.png",
         photoCaption,
-        !isCaptionTooLong ? replyMarkup : undefined
+        replyMarkup
       );
       if (res.ok) {
         await extractMessageId(res);
@@ -232,7 +238,7 @@ async function rawSendPhoto(chatId: string, photoSource: string, captionText: st
       }
     }
 
-    // Final fallback to text message if photo delivery failed completely
+    // Final fallback to text message ONLY if photo delivery failed completely
     const fallbackId = await rawSend(chatId, captionText, buttons);
     if (fallbackId) sentMessageIds.push(fallbackId);
     return sentMessageIds;
