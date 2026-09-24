@@ -370,31 +370,31 @@ export function getPatternOptimizationAdvice(
 
   let sizeMultiplier = 1.0;
   let takeProfitPct = 50;
-  let stopLossPct = 20;
+  let stopLossPct = 5;
   let badge = "🔷 B-Tier Neutral Pattern";
-  let rationale = "Standard baseline setup. Normal position size and standard 50% profit target.";
+  let rationale = "Standard baseline setup. Normal position size, 50% profit target, and strict 5% max loss stop.";
   let isHighConviction = false;
 
   if (tier === "S_TIER") {
     sizeMultiplier = 1.75;
     takeProfitPct = 120; // Allow 2x+ runners to run for maximum gains
-    stopLossPct = 18; // Tight stop to protect capital
+    stopLossPct = 5; // Strict 5% max loss guardrail
     badge = `🌟 S-Tier Elite Runner (${winRatePct}% Win Rate | ${profitFactor.toFixed(1)}x PF)`;
-    rationale = `Learned top-performing setup on ${features.channel.toUpperCase()}. Position scaled by 1.75x and take-profit expanded to +120% to maximize earning potential.`;
+    rationale = `Learned top-performing setup on ${features.channel.toUpperCase()}. Position scaled by 1.75x and take-profit expanded to +120% with strict 5% max loss protection.`;
     isHighConviction = true;
   } else if (tier === "A_TIER") {
     sizeMultiplier = 1.35;
     takeProfitPct = 80;
-    stopLossPct = 20;
+    stopLossPct = 5;
     badge = `🟢 A-Tier Strong Setup (${winRatePct}% Win Rate | ${profitFactor.toFixed(1)}x PF)`;
-    rationale = `Solid win rate and healthy profit factor. Scaled position by 1.35x with +80% take-profit target.`;
+    rationale = `Solid win rate and healthy profit factor. Scaled position by 1.35x with +80% take-profit target and strict 5% max loss protection.`;
     isHighConviction = true;
   } else if (tier === "C_RISKY") {
     sizeMultiplier = 0.5;
     takeProfitPct = 35;
-    stopLossPct = 15;
+    stopLossPct = 3.5;
     badge = `⚠️ C-Tier High Risk (${winRatePct}% Win Rate)`;
-    rationale = `Historical data shows low conversion or developer dump tendencies. Position halved to $1.00 USD.`;
+    rationale = `Historical data shows low conversion or developer dump tendencies. Position halved and stop loss tightened to -3.5% to eliminate drawdown.`;
     isHighConviction = false;
   }
 

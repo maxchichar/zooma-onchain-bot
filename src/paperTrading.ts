@@ -22,7 +22,7 @@ import { extractPatternFeatures, getPatternOptimizationAdvice, recordTradeOutcom
 
 let paperTradingEnabled = true;
 let currentPositionSize = Number(process.env.PAPER_POSITION_SIZE ?? 2); // $2 USD virtual notional per trade
-const STOP_LOSS_PCT = Number(process.env.PAPER_STOP_LOSS_PCT ?? 20); // % below entry
+const STOP_LOSS_PCT = Number(process.env.PAPER_STOP_LOSS_PCT ?? 5); // % below entry (strict 5% max loss limit)
 const TAKE_PROFIT_PCT = Number(process.env.PAPER_TAKE_PROFIT_PCT ?? 50); // % above entry
 const MAX_HOLD_HOURS = Number(process.env.PAPER_MAX_HOLD_HOURS ?? 48);
 const FEE_PCT = Number(process.env.PAPER_FEE_PCT ?? 1); // per side (entry + exit)
@@ -525,7 +525,7 @@ export async function openPaperTrade(
     : currentPositionSize;
 
   const effectiveTakeProfitPct = advice.takeProfitPct ?? TAKE_PROFIT_PCT;
-  const effectiveStopLossPct = advice.stopLossPct ?? STOP_LOSS_PCT;
+  const effectiveStopLossPct = Math.min(5, advice.stopLossPct ?? STOP_LOSS_PCT);
 
   const stopLossPrice = current.price * (1 - effectiveStopLossPct / 100);
   const targetPrice = current.price * (1 + effectiveTakeProfitPct / 100);
@@ -1080,7 +1080,9 @@ export async function checkOpenTrades(): Promise<void> {
         }
       }
 
-      if (trade.stop_loss_price !== null && current.price <= trade.stop_loss_price) {
+      // Strict 5% max loss guardrail: never allow a loss to exceed 5.0%
+      const isLossExceeded = pnlPct <= -5.0;
+      if (isLossExceeded || (trade.stop_loss_price !== null && current.price <= trade.stop_loss_price)) {
         const isTrailing = trade.breakeven_locked || (trade.trailing_stop_price && trade.trailing_stop_price > trade.entry_price);
         await closeTrade(trade, current.price, isTrailing ? "trailing_stop" : "stop_loss");
       } else if (trade.target_price !== null && current.price >= trade.target_price) {
