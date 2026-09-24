@@ -89,6 +89,13 @@ Crypto chats can get messy quickly.
 * Whenever you send a slash command (like `/trending` or `/status`), ZOOMA delivers a detailed response with images and live buttons.
 * After **45 seconds**, the messages cleanly dissolve like vapor, leaving your Telegram chat spotless and clutter-free.
 
+### 11. Member Registration Gatekeeping and Community Analytics
+To ensure maximum speed, prevent spam, and track genuine community adoption:
+* **Instant Free Registration**: New users simply send `/register` to unlock the entire bot in one second.
+* **Smart Gatekeeping**: Unregistered visitors are guided to register before accessing live trading, dumps, or sniper tools.
+* **Live User Analytics**: Send `/users` or `/status` anytime to see exactly how many people are using the bot, including daily active users and total commands executed.
+* **Personal Member Profile**: View your unique member number, join date, and usage with `/profile`.
+
 ---
 
 ## Telegram Bot Commands
@@ -97,6 +104,9 @@ You can control ZOOMA by sending simple commands to [@ZOOMAONCHAINBOT](https://t
 
 | Command | What It Does |
 | :--- | :--- |
+| `/register` | Register your free account to unlock all trading features and tools. |
+| `/users` | View total registered members, daily active users, and community stats. |
+| `/profile` | Check your personal member number, join date, and account status. |
 | `/autotrade <token CA>` | Launches an autonomous single trade (Auto-Buy, Dump Shield, and Auto-Sell). |
 | `/dumps` | Opens the Real-Time Dump Shield dashboard to see active protections and intercepted dumps. |
 | `/sniper [on\|off]` | Turn the millisecond drop sniper engine on or off anytime. |
@@ -122,7 +132,7 @@ You can control ZOOMA by sending simple commands to [@ZOOMAONCHAINBOT](https://t
 
 ## How to Get Started in 3 Easy Steps
 
-1. **Open Telegram**: Scan the QR code above or search for **`@ZOOMAONCHAINBOT`** in your Telegram app.
+1. **Open Telegram & Register**: Scan the QR code above or search for **`@ZOOMAONCHAINBOT`** in your Telegram app, then send `/register` to unlock your free member account.
 2. **Fund Your Practice Wallet**: Send `/fund 10` to deposit $10 into your virtual paper trading wallet.
 3. **Turn On Auto-Trading**: Send `/papertrade on` to let the bot automatically take trades on verified alerts, or send `/autotrade <token CA>` to test any specific Solana coin!
 

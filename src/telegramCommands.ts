@@ -53,6 +53,14 @@ import { isSniperActive, setSniperActive, getSniperState } from "./sniperControl
 import { handleChannelsCommand } from "./multiChannelResearch.js";
 import { formatPatternDashboardText } from "./patternLearning.js";
 import { formatDumpDashboardText } from "./dumpDetector.js";
+import {
+  isUserRegistered,
+  getUser,
+  registerUser,
+  recordUserActivity,
+  getUserStats,
+  formatUserStatsDashboard,
+} from "./userRegistry.js";
 
 const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const MAX_CAPACITY = Number(process.env.MAX_TRACKED_WALLETS ?? 5000);
@@ -72,7 +80,21 @@ const HELP_BUTTONS = [
 interface TelegramUpdate {
   message?: {
     message_id?: number;
-    chat: { id: number };
+    from?: {
+      id: number;
+      is_bot?: boolean;
+      first_name?: string;
+      last_name?: string;
+      username?: string;
+    };
+    chat: {
+      id: number;
+      type?: string;
+      title?: string;
+      username?: string;
+      first_name?: string;
+      last_name?: string;
+    };
     text?: string;
   };
 }
@@ -100,6 +122,9 @@ const HELP_TEXT =
   `👑 \`/traders\` : 100x - 1000x Top Traders Leaderboard\n` +
   `🌐 \`/channels\` : Multi-Channel Scanner (Meteora, Raydium, Moonshot)\n` +
   `🧠 \`/patterns\` : AI Pattern Learning & Profit Maximizer\n` +
+  `👥 \`/register\` : Register & Unlock Full Access\n` +
+  `👥 \`/users\` : Member Analytics & Community Stats\n` +
+  `👤 \`/profile\` : Your Member ID & Activity Card\n` +
   `🛡️ \`/scan <CA>\` : Security Audit & Snipe Links\n` +
   `🐋 \`/wallets\` : Smart Money Tracker & Whales\n` +
   `🧠 \`/ai\` : JEV & LLM AI Architecture\n\n` +
@@ -226,14 +251,17 @@ async function handleStatus(chatId: string): Promise<void> {
   const { count: openTrades } = await supabase.from("paper_trades").select("*", { count: "exact", head: true }).eq("status", "open");
   const { count: closedTrades } = await supabase.from("paper_trades").select("*", { count: "exact", head: true }).eq("status", "closed");
   const { count: totalWallets } = await supabase.from("tracked_wallets").select("*", { count: "exact", head: true });
+  const userStats = getUserStats();
 
   await sendTelegramMessageTo(
     chatId,
     `📊 *System Status & Activity (Last 24h)*\n\n` +
+      `• Registered Bot Members: *${userStats.totalUsers}* (*${userStats.active24h}* active today)\n` +
       `• Tracked Wallets: *${totalWallets ?? 0}* / *${MAX_CAPACITY}*\n` +
       `• Detected Signals: *${signalCount ?? 0}*\n` +
       `• Open Paper Trades: *${openTrades ?? 0}*\n` +
-      `• Closed Paper Trades (All-Time): *${closedTrades ?? 0}*\n\n` +
+      `• Closed Paper Trades (All-Time): *${closedTrades ?? 0}*\n` +
+      `• Total Commands Handled: *${userStats.totalCommands}*\n\n` +
       `_Run \`npm run report\` for comprehensive expectancy & PnL breakdowns._`
   );
 }
@@ -1047,14 +1075,136 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     scheduleVaporization(chatId, message.message_id, VAPORIZE_DELAY_SECONDS);
   }
 
-  const [command, ...args] = message.text.trim().split(/\s+/);
+  const fromUser = message.from;
+  const userId = fromUser ? String(fromUser.id) : chatId;
+  const username = fromUser?.username ? `@${fromUser.username}` : (message.chat.username ? `@${message.chat.username}` : undefined);
+  const firstName = fromUser?.first_name || message.chat.first_name || "Trader";
+  const lastName = fromUser?.last_name || message.chat.last_name;
+
+  const [rawCommand, ...args] = message.text.trim().split(/\s+/);
+  const command = rawCommand.split("@")[0].toLowerCase();
+
+  const isRegistered = isUserRegistered(userId);
+
+  // Gatekeeping for unregistered users
+  if (!isRegistered) {
+    if (command === "/register" || command === "/join" || command === "/signup") {
+      const { user, isNew } = registerUser({
+        userId,
+        chatId,
+        username,
+        firstName,
+        lastName,
+      });
+
+      if (isNew) {
+        await sendTelegramPhotoTo(
+          chatId,
+          ZOOMA_BANNER_IMAGE,
+          `🎉 *Registration Successful!*\n\n` +
+            `Welcome to ZOOMA, *${firstName}*! You are officially registered as *Member #${user.memberNumber}*.\n\n` +
+            `✅ *Account Status: ACTIVE & UNLOCKED*\n` +
+            `You now have full access to all bot features:\n` +
+            `• ⚡ \`/autotrade <CA>\` : Autonomous single-trade buy and sell\n` +
+            `• 🚨 \`/dumps\` : Real-Time Dump Shield and protection\n` +
+            `• 💊 \`/pump\` : Ultra-Safe 80%+ confidence drops\n` +
+            `• 💵 \`/fund 10\` : Fund virtual paper wallet ($10 USD min)\n` +
+            `• 💼 \`/papertrade\` : Start simulated trades\n` +
+            `• 🔥 \`/trending\` : Top 15 trending Solana tokens\n` +
+            `• 👥 \`/users\` : Community and user statistics\n\n` +
+            `Type \`/help\` anytime to view the complete command list.`
+        );
+      } else {
+        await sendTelegramMessageTo(
+          chatId,
+          `ℹ️ *Account Already Active*\n\n` +
+            `You are already registered as *Member #${user.memberNumber}*.\n` +
+            `Your access is unlocked. Type \`/help\` to view all commands.`
+        );
+      }
+      return;
+    }
+
+    if (command === "/start" || command === "/help") {
+      await sendTelegramPhotoTo(
+        chatId,
+        ZOOMA_BANNER_IMAGE,
+        `👋 *Welcome to ZOOMA Onchain Intelligence!*\n\n` +
+          `ZOOMA is an autonomous Solana trading bot with real-time dump protection, AI pattern learning, and millisecond token sniping.\n\n` +
+          `🔒 *Access Status: Gatekept (Registration Required)*\n` +
+          `To protect system capacity and keep execution speeds under 300ms, ZOOMA is reserved for registered members.\n\n` +
+          `Registration is *100% free* and takes just one second.\n\n` +
+          `👉 *Type \`/register\` to activate your account and unlock all features!*`
+      );
+      return;
+    }
+
+    // Gatekeep any other command
+    await sendTelegramMessageTo(
+      chatId,
+      `🔒 *Access Restricted: Member Registration Required*\n\n` +
+        `You must register before using ZOOMA commands like \`${command}\`.\n\n` +
+        `Registration is completely free and unlocks:\n` +
+        `• Autonomous Single-Trade execution (\`/autotrade\`)\n` +
+        `• Real-Time Dump Shield & Anti-Rug detection (\`/dumps\`)\n` +
+        `• Ultra-Safe Pump.fun snipers & fresh gems (\`/pump\`, \`/gems\`)\n` +
+        `• Virtual paper trading wallet (\`/fund\`, \`/papertrade\`)\n\n` +
+        `👉 *Send \`/register\` now to unlock your access immediately.*`
+    );
+    return;
+  }
+
+  // User is registered: record activity
+  recordUserActivity(userId, username, firstName);
 
   try {
-    switch (command.split("@")[0]) {
+    switch (command) {
       case "/start":
       case "/help":
         await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, HELP_TEXT, HELP_BUTTONS);
         break;
+      case "/register":
+      case "/join":
+      case "/signup": {
+        const user = getUser(userId);
+        await sendTelegramMessageTo(
+          chatId,
+          `ℹ️ *Account Active*\n\n` +
+            `You are already registered as *Member #${user?.memberNumber ?? 1}*.\n` +
+            `Your access is completely unlocked. Type \`/help\` to view all commands.`
+        );
+        break;
+      }
+      case "/users":
+      case "/members":
+      case "/userstats":
+      case "/analytics":
+        await sendTelegramPhotoTo(chatId, ZOOMA_BANNER_IMAGE, formatUserStatsDashboard());
+        break;
+      case "/profile":
+      case "/myprofile":
+      case "/whoami":
+      case "/account": {
+        const user = getUser(userId);
+        if (!user) {
+          await sendTelegramMessageTo(chatId, "⚠️ Please send `/register` first to create your account.");
+          break;
+        }
+        const joined = new Date(user.registeredAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+        await sendTelegramMessageTo(
+          chatId,
+          `👤 *Your ZOOMA Member Profile*\n\n` +
+            `• Member Number: *#${user.memberNumber}*\n` +
+            `• User ID: \`${user.userId}\`\n` +
+            `• Username: *${user.username ?? "Not set"}*\n` +
+            `• Name: *${user.firstName ?? "Trader"}*\n` +
+            `• Status: 🟢 *Active*\n` +
+            `• Role: *${user.role.toUpperCase()}*\n` +
+            `• Registered: *${joined}*\n` +
+            `• Total Commands: *${user.commandCount}*`
+        );
+        break;
+      }
       case "/ai":
       case "/models":
       case "/model":
