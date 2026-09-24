@@ -86,7 +86,7 @@ const HELP_TEXT =
   `⚡ \`/insider\` : Ultra-Early Launches (10 - 30m old)\n` +
   `💎 \`/gems\` : Live Fresh Gems (< 48h) & 100x Breakouts\n` +
   `🔥 \`/trending\` : Top 15 Trending Solana Tokens\n` +
-  `💵 \`/fund <amount>\` : Fund Paper Wallet (e.g. \`/fund 50\`)\n` +
+  `💵 \`/fund [amount]\` : Fund Paper Wallet ($10 USD min, e.g. \`/fund 10\`)\n` +
   `💼 \`/papertrade [CA]\` : Start / Trade CA ($2 USD) / Configure\n` +
   `🛑 \`/stoppapertrade\` : Stop Trading & See Profit on Capital\n` +
   `📈 \`/positions\` : Live Paper Portfolio & Real-Time PnL\n` +
@@ -606,7 +606,10 @@ async function handlePerformance(chatId: string): Promise<void> {
 }
 
 async function handleFundPaperWallet(chatId: string, amountStr?: string): Promise<void> {
-  const amount = amountStr ? Number(amountStr) : NaN;
+  const currentWallet = getPaperWallet();
+  // If user enters /fund without an amount and wallet is not funded yet, default to reduced $10 USD
+  let amount = amountStr ? Number(amountStr) : !currentWallet.isFunded ? 10 : NaN;
+
   if (isNaN(amount) || amount <= 0) {
     const wallet = getPaperWallet();
     const statusText = wallet.isFunded
@@ -614,15 +617,16 @@ async function handleFundPaperWallet(chatId: string, amountStr?: string): Promis
         `• Initial Funded Capital: *$${wallet.initialFundedAmount.toFixed(2)} USD*\n` +
         `• Available Cash: *$${wallet.availableCash.toFixed(2)} USD*\n` +
         `• In Active Trades: *$${wallet.allocatedCash.toFixed(2)} USD*\n\n` +
-        `To add more capital, specify the amount: e.g. \`/fund 50\` or \`/fund 100\``
+        `To add more capital, specify the amount: e.g. \`/fund 10\`, \`/fund 25\`, or \`/fund 50\``
       : `• Current Wallet Status: 🔴 NOT FUNDED\n\n` +
-        `Please specify how much to fund the paper wallet with:\n` +
-        `Example: \`/fund 50\` (funds wallet with $50.00 USD for $2.00 trades)`;
+        `Required funding reduced to *$10.00 USD* (5 trades capacity at $2.00/trade).\n` +
+        `Example: \`/fund 10\``;
 
     const text =
       `💼 *[ZOOMA PAPER TRADING WALLET]*\n\n` +
       statusText +
       `\n\n⚡ *Quick Commands:*\n` +
+      `• \`/fund 10\` : Fund with $10.00 USD (5 trades capacity - Standard Entry)\n` +
       `• \`/fund 25\` : Fund with $25.00 USD (12 trades capacity)\n` +
       `• \`/fund 50\` : Fund with $50.00 USD (25 trades capacity)\n` +
       `• \`/fund 100\` : Fund with $100.00 USD (50 trades capacity)\n` +
@@ -634,6 +638,16 @@ async function handleFundPaperWallet(chatId: string, amountStr?: string): Promis
     } catch {
       await sendTelegramMessageTo(chatId, text, HELP_BUTTONS);
     }
+    return;
+  }
+
+  if (amount < 10) {
+    await sendTelegramMessageTo(
+      chatId,
+      `⚠️ *Minimum Required Funding is $10.00 USD*\n\n` +
+      `To allow multiple trade allocations ($2.00/trade) and proper risk distribution, the minimum required funds are *$10.00 USD* (5 trades capacity).\n\n` +
+      `Usage: \`/fund 10\` (funds with $10.00 USD)`
+    );
     return;
   }
 
@@ -694,9 +708,10 @@ async function handlePaperTradeCommand(chatId: string, action?: string, amountSt
     const promptText =
       `💼 *[PAPER TRADING WALLET NOT FUNDED]*\n\n` +
       `Before activating automated paper trading, please fund the bot with a fixed capital amount.\n\n` +
-      `ZOOMA will allocate *$2.00 USD per trade* (strict >= 80% AI confidence) from your funded capital and track exact profits on your money.\n\n` +
+      `Required funding is reduced to *$10.00 USD* (5 trades capacity at $2.00/trade with strict >= 80% AI confidence).\n\n` +
       `*How much would you like to fund the bot with?*\n\n` +
       `⚡ *Quick Funding Options:*\n` +
+      `• \`/fund 10\` : Fund $10.00 USD (5 trades capacity - Standard Entry)\n` +
       `• \`/fund 25\` : Fund $25.00 USD (12 trades capacity)\n` +
       `• \`/fund 50\` : Fund $50.00 USD (25 trades capacity)\n` +
       `• \`/fund 100\` : Fund $100.00 USD (50 trades capacity)\n` +

@@ -39,6 +39,7 @@ const WALLET_STORE_FILE = path.resolve(process.cwd(), ".paper_wallet_store.json"
  * Only signals and drops with >= 80% (0.80) AI confidence qualify for auto paper trading.
  */
 export const MIN_AI_CONFIDENCE = 0.80;
+export const MIN_REQUIRED_FUNDS_USD = 10; // Reduced required funds to $10 USD (5 trades capacity)
 
 export type Category =
   | "wallet_pattern"
@@ -332,7 +333,7 @@ export async function stopPaperTradingAndReport(chatId: string): Promise<void> {
     `⚡ *Status:* 🛑 *PAUSED / STOPPED*\n` +
     `_Auto-trading has been halted. No further simulated trades will be placed._\n\n` +
     `💡 *To start a new session or fund more capital:*\n` +
-    `• \`/fund <amount>\` : Re-fund paper wallet (e.g. \`/fund 50\`)\n` +
+    `• \`/fund <amount>\` : Re-fund paper wallet (e.g. \`/fund 10\`)\n` +
     `• \`/papertrade on\` : Re-activate paper trading\n` +
     `• \`/close all\` : Close all active positions at market price`;
 
@@ -644,7 +645,8 @@ export async function openManualPaperTrade(
       `💼 *[PAPER WALLET NOT FUNDED]*\n\n` +
       `Before paper trading can begin, please fund the bot's paper wallet with a fixed amount.\n\n` +
       `👉 *How much would you like to fund the bot with?*\n\n` +
-      `Usage: \`/fund <amount>\` (e.g. \`/fund 50\` or \`/fund 100\`)\n\n` +
+      `Usage: \`/fund <amount>\` (e.g. \`/fund 10\` or \`/fund 25\`)\n\n` +
+      `• Required Minimum: *$10.00 USD (5 trades capacity)*\n` +
       `• Standard Trade Size: *$${positionSize.toFixed(2)} USD per trade*\n` +
       `• Stop anytime with \`/stoppapertrade\` to see the exact profit made on your funded money!`
     );
@@ -654,7 +656,7 @@ export async function openManualPaperTrade(
   if (wallet.availableCash < positionSize) {
     await sendTelegramMessageTo(
       chatId,
-      `⚠️ *[INSUFFICIENT PAPER WALLET FUNDS]*\n\n• Available Cash: *$${wallet.availableCash.toFixed(2)} USD*\n• Required: *$${positionSize.toFixed(2)} USD*\n\nPlease add funds using \`/fund <amount>\` (e.g. \`/fund 50\`).`
+      `⚠️ *[INSUFFICIENT PAPER WALLET FUNDS]*\n\n• Available Cash: *$${wallet.availableCash.toFixed(2)} USD*\n• Required: *$${positionSize.toFixed(2)} USD*\n\nPlease add funds using \`/fund <amount>\` (e.g. \`/fund 10\`).`
     );
     return;
   }
